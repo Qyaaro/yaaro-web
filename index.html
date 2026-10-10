@@ -757,7 +757,7 @@
   <div id="call-screen" class="screen">
     <div class="call-screen">
       <video id="remote-video" autoplay playsinline onclick="swapCallVideos()" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;z-index:0;"></video>
-      <div class="remote-avatar-fallback" id="remote-fallback">
+      <div class="remote-avatar-fallback" id="remote-fallback" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;background:#0a0e17;z-index:1;">
         <div class="big-av" id="remote-fallback-av">?</div>
       </div>
       <video id="local-video" autoplay playsinline muted onclick="swapCallVideos()" style="display:none;position:absolute;right:14px;top:70px;width:96px;height:128px;object-fit:cover;border-radius:14px;z-index:3;background:#1a1f2e;border:2px solid rgba(59,130,246,0.6);box-shadow:0 4px 16px rgba(0,0,0,0.4);"></video>
@@ -942,6 +942,7 @@
           updateProfile(); startPresence();
           showScreen("chats-screen"); loadUsers();
           listenForCalls(); loadCallHistory();
+          startDeliveryAck();
           try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch(e) {}
         } else {
           userData = null;
@@ -1110,16 +1111,11 @@
 
     if (presenceTimer) clearInterval(presenceTimer);
     presenceTimer = setInterval(() => {
-      // Heartbeat only while tab/app is usable and we still have a user
       if (!userData) return;
-      if (document.visibilityState === "visible") {
-        ref.update({ online: true, lastSeen: Date.now() });
-      } else {
-        // Minimized with internet ON → stay online (lastSeen ages slowly)
-        // Do NOT force offline on minimize
-        ref.update({ lastSeen: Date.now() });
-      }
-    }, 25000);
+      // Keep online + lastSeen while Firebase connected — even if minimized
+      // Real offline is handled by onDisconnect when connection drops
+      ref.update({ online: true, lastSeen: Date.now() });
+    }, 20000);
 
     // beforeunload: try set offline (best-effort; onDisconnect is the reliable path)
     window.addEventListener("beforeunload", () => {
@@ -1473,11 +1469,16 @@
     }
   }
   function updateTicks(id, m) {
+    if (!m) return;
     if (m.deleted || m.edited) { updateMsgEl(id, m); return; }
     const el = msgEls[id];
-    if (!el || m.sender !== userData.uid) return;
+    if (!el) return;
+    // Only sender sees ticks
+    if (m.sender !== userData.uid) return;
     const meta = el.querySelector(".meta");
-    if (meta) meta.innerHTML = `${fmtTime(m.time)}${m.edited?'<span class="edited-tag">(edited)</span>':''}${ticks(m.status||"sent")}`;
+    if (meta) {
+      meta.innerHTML = `${fmtTime(m.time)}${m.edited?'<span class="edited-tag">(edited)</span>':''}${ticks(m.status||"sent")}`;
+    }
   }
   function ticks(s) {
     if (s==="read") return '<span class="ticks read">✓✓</span>';
@@ -1493,6 +1494,40 @@
     });
     // Clear unread count
     if (userData) db.ref("unread/" + userData.uid + "/" + room).set(0);
+  }
+
+
+  // Mark messages as delivered even when chat screen is not open
+  let deliveryRoomListeners = {};
+  function startDeliveryAck() {
+    if (!userData) return;
+    db.ref("lastMessages").on("value", snap => {
+      const all = snap.val() || {};
+      Object.keys(all).forEach(room => {
+        if (!room.split("_").includes(userData.uid)) return;
+        if (deliveryRoomListeners[room]) return;
+        deliveryRoomListeners[room] = true;
+        db.ref("chats/" + room).limitToLast(30).on("child_added", s => {
+          const m = s.val();
+          if (!m || m.deleted) return;
+          if (m.sender === userData.uid) return; // own message
+          if (m.status === "delivered" || m.status === "read") return;
+          // Recipient acknowledges delivery
+          db.ref("chats/" + room + "/" + s.key + "/status").set("delivered");
+        });
+        // Also catch status still "sent" on existing recent messages
+        db.ref("chats/" + room).limitToLast(30).once("value").then(ss => {
+          const ms = ss.val() || {};
+          Object.keys(ms).forEach(id => {
+            const m = ms[id];
+            if (!m || m.deleted) return;
+            if (m.sender === userData.uid) return;
+            if (m.status === "delivered" || m.status === "read") return;
+            db.ref("chats/" + room + "/" + id + "/status").set("delivered");
+          });
+        });
+      });
+    });
   }
 
   function pushMsg(payload) {
@@ -1876,12 +1911,23 @@
             snap.ref.remove();
             const onCallScreen = document.getElementById("call-screen") &&
               document.getElementById("call-screen").classList.contains("active");
-            // If already on active call screen, do not force leave
             if (onCallScreen && currentCallId) {
               incomingCallData = null;
               return;
             }
+            // Callee: unanswered → missed history (caller cancel/timeout)
             if (incomingCallData && (incomingCallData.callId === callId || incomingCallData.id === callId)) {
+              const inc = incomingCallData;
+              if (s === "missed" || s === "cancelled") {
+                currentCallId = callId;
+                callPeerUid = inc.from;
+                callPeerName = inc.fromName;
+                isCaller = false;
+                callType = inc.type || "voice";
+                saveCallHistoryFor("missed", inc.from, inc.fromName, inc.type);
+              } else if (s === "rejected") {
+                // already handled by rejectCall usually
+              }
               incomingCallData = null;
             }
             stopRingtone();
@@ -2025,9 +2071,24 @@
         if (callType === "video") {
           remoteVideo.srcObject = remoteStream;
           remoteVideo.style.display = "block";
-          document.getElementById("call-ui-layer").style.opacity = "0.85";
+          document.getElementById("remote-fallback").style.display = "none";
+          const layer = document.getElementById("call-ui-layer");
+          if (layer) layer.style.opacity = "0.85";
+          attachRemoteTrackMonitor(remoteStream);
         }
         remoteAudio.srcObject = remoteStream;
+      } else if (e.track) {
+        // Single track without stream
+        if (e.track.kind === "video" && callType === "video") {
+          const ms = new MediaStream([e.track]);
+          remoteStream = ms;
+          remoteVideo.srcObject = ms;
+          remoteVideo.style.display = "block";
+          attachRemoteTrackMonitor(ms);
+        }
+        if (e.track.kind === "audio") {
+          remoteAudio.srcObject = new MediaStream([e.track]);
+        }
       }
     };
 
@@ -2166,6 +2227,8 @@
         if (callType === "video") {
           remoteVideo.srcObject = remoteStream;
           remoteVideo.style.display = "block";
+          document.getElementById("remote-fallback").style.display = "none";
+          attachRemoteTrackMonitor(remoteStream);
         }
         remoteAudio.srcObject = remoteStream;
       }
@@ -2389,6 +2452,40 @@
         el.className = "call-quality " + cls;
       } catch (e) {}
     }, 4000);
+  }
+
+
+  function attachRemoteTrackMonitor(stream) {
+    if (!stream) return;
+    const vtracks = stream.getVideoTracks();
+    vtracks.forEach(track => {
+      const apply = () => {
+        const remoteVideo = document.getElementById("remote-video");
+        const remoteFallback = document.getElementById("remote-fallback");
+        if (!remoteVideo || !remoteFallback) return;
+        const muted = track.muted || track.readyState === "ended" || track.enabled === false;
+        if (callType === "video" && muted) {
+          // Keep call UI; show avatar instead of black video
+          remoteVideo.style.display = "none";
+          remoteFallback.style.display = "flex";
+          const av = document.getElementById("remote-fallback-av");
+          if (av) {
+            const name = callPeerName || "User";
+            av.textContent = name[0].toUpperCase();
+          }
+        } else if (callType === "video" && !muted) {
+          remoteVideo.style.display = "block";
+          remoteFallback.style.display = "none";
+        }
+      };
+      track.addEventListener("mute", apply);
+      track.addEventListener("unmute", apply);
+      track.addEventListener("ended", apply);
+      // Poll enabled flag (some browsers don't fire mute on enabled=false)
+      if (track._yaaroPoll) clearInterval(track._yaaroPoll);
+      track._yaaroPoll = setInterval(apply, 800);
+      apply();
+    });
   }
 
   function toggleMute() {
