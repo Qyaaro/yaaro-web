@@ -515,8 +515,21 @@
 <body>
 <div class="phone">
 
+  <!-- SPLASH (auth loading) -->
+  <div id="splash-screen" class="screen active">
+    <div class="auth-box" style="align-items:center;text-align:center;">
+      <div class="auth-logo">
+        <div class="y-icon">Y</div>
+        <h1>Yaaro</h1>
+        <p style="margin-top:12px;color:#8b949e;">Loading...</p>
+      </div>
+      <div style="width:36px;height:36px;border:3px solid #21262d;border-top-color:#3b82f6;border-radius:50%;animation:spin 0.8s linear infinite;margin:24px auto 0;"></div>
+    </div>
+  </div>
+  <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+
   <!-- LOGIN -->
-  <div id="login-screen" class="screen active">
+  <div id="login-screen" class="screen">
     <div class="auth-box">
       <div class="auth-logo">
         <div class="y-icon">Y</div>
@@ -912,20 +925,36 @@
     return p.length >= 6 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p) && /[!@#$%^&*]/.test(p);
   }
 
+  let authReady = false;
   auth.onAuthStateChanged(async (user) => {
-    if (user) {
-      if (!user.emailVerified) { showScreen("verify-screen"); return; }
-      const snap = await db.ref("users/" + user.uid).once("value");
-      const d = snap.val();
-      if (d) {
-        userData = d; userData.email = user.email;
-        updateProfile(); startPresence();
-        showScreen("chats-screen"); loadUsers();
-        listenForCalls(); loadCallHistory();
-        try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch(e) {}
-      } else auth.signOut();
-    } else {
-      userData = null; showScreen("login-screen");
+    try {
+      if (user) {
+        if (!user.emailVerified) {
+          userData = null;
+          showScreen("verify-screen");
+          authReady = true;
+          return;
+        }
+        const snap = await db.ref("users/" + user.uid).once("value");
+        const d = snap.val();
+        if (d) {
+          userData = d; userData.email = user.email;
+          updateProfile(); startPresence();
+          showScreen("chats-screen"); loadUsers();
+          listenForCalls(); loadCallHistory();
+          try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch(e) {}
+        } else {
+          userData = null;
+          auth.signOut();
+          showScreen("login-screen");
+        }
+      } else {
+        userData = null;
+        // Only show login after first auth resolution (not before)
+        showScreen("login-screen");
+      }
+    } finally {
+      authReady = true;
     }
   });
 
@@ -1055,30 +1084,53 @@
     });
   }
 
+  let presenceConnectedRef = null;
   function startPresence() {
     if (!userData) return;
     const ref = db.ref("users/" + userData.uid);
-    // Ensure verified flag is true for logged-in verified users
-    ref.update({ online: true, lastSeen: Date.now(), verified: true });
+    // Keep verified true for logged-in users
+    ref.update({ verified: true });
+
+    // Real connectivity via Firebase — not page visibility
+    if (presenceConnectedRef) {
+      try { presenceConnectedRef.off(); } catch (e) {}
+    }
+    presenceConnectedRef = db.ref(".info/connected");
+    presenceConnectedRef.on("value", (snap) => {
+      if (snap.val() === true) {
+        // When connected: mark online and schedule offline on disconnect
+        ref.onDisconnect().update({ online: false, lastSeen: Date.now() }).then(() => {
+          ref.update({ online: true, lastSeen: Date.now() });
+        }).catch(() => {
+          ref.update({ online: true, lastSeen: Date.now() });
+        });
+      }
+      // When false, server already runs onDisconnect on other clients' view
+    });
+
     if (presenceTimer) clearInterval(presenceTimer);
     presenceTimer = setInterval(() => {
+      // Heartbeat only while tab/app is usable and we still have a user
+      if (!userData) return;
       if (document.visibilityState === "visible") {
         ref.update({ online: true, lastSeen: Date.now() });
-      }
-    }, 20000);
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") {
-        ref.update({ online: false, lastSeen: Date.now() });
       } else {
-        ref.update({ online: true, lastSeen: Date.now() });
+        // Minimized with internet ON → stay online (lastSeen ages slowly)
+        // Do NOT force offline on minimize
+        ref.update({ lastSeen: Date.now() });
       }
+    }, 25000);
+
+    // beforeunload: try set offline (best-effort; onDisconnect is the reliable path)
+    window.addEventListener("beforeunload", () => {
+      try { ref.update({ online: false, lastSeen: Date.now() }); } catch (e) {}
     });
-    window.addEventListener("beforeunload", () => ref.update({ online: false, lastSeen: Date.now() }));
   }
 
   function isOnline(u) {
     if (!u) return false;
-    return u.online === true && (Date.now() - (u.lastSeen || 0) < 40000);
+    // online flag + recent heartbeat (90s window; covers minimize heartbeats)
+    return u.online === true && (Date.now() - (u.lastSeen || 0) < 90000);
   }
 
   function avatarHtml(u, sizeClass) {
@@ -1832,6 +1884,7 @@
             if (incomingCallData && (incomingCallData.callId === callId || incomingCallData.id === callId)) {
               incomingCallData = null;
             }
+            stopRingtone();
             if (document.getElementById("incoming-call-screen") &&
                 document.getElementById("incoming-call-screen").classList.contains("active")) {
               showScreen("chats-screen");
@@ -1853,8 +1906,54 @@
         return;
       }
       incomingCallData = null;
+      stopRingtone();
       showScreen("chats-screen");
     });
+  }
+
+
+  let ringtoneAudio = null;
+  let ringtoneCtx = null;
+  let ringtoneOsc = null;
+  let ringtoneGain = null;
+  let ringtoneInterval = null;
+
+  function startRingtone() {
+    stopRingtone();
+    try {
+      // Prefer Web Audio beep pattern (works without external file)
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        ringtoneCtx = new AC();
+        if (ringtoneCtx.state === "suspended") ringtoneCtx.resume().catch(() => {});
+        const beep = () => {
+          if (!ringtoneCtx) return;
+          try {
+            const osc = ringtoneCtx.createOscillator();
+            const gain = ringtoneCtx.createGain();
+            osc.type = "sine";
+            osc.frequency.value = 880;
+            gain.gain.value = 0.15;
+            osc.connect(gain);
+            gain.connect(ringtoneCtx.destination);
+            osc.start();
+            setTimeout(() => { try { osc.stop(); } catch(e) {} }, 350);
+          } catch (e) {}
+        };
+        beep();
+        ringtoneInterval = setInterval(beep, 1200);
+        return;
+      }
+    } catch (e) {}
+  }
+
+  function stopRingtone() {
+    try {
+      if (ringtoneInterval) { clearInterval(ringtoneInterval); ringtoneInterval = null; }
+      if (ringtoneOsc) { try { ringtoneOsc.stop(); } catch(e) {} ringtoneOsc = null; }
+      if (ringtoneCtx) { try { ringtoneCtx.close(); } catch(e) {} ringtoneCtx = null; }
+      if (ringtoneAudio) { ringtoneAudio.pause(); ringtoneAudio = null; }
+    } catch (e) {}
   }
 
   function showIncomingCall(data) {
@@ -1873,6 +1972,7 @@
     document.getElementById("inc-badge").textContent = isVid ? "📹 Incoming video call" : "📞 Incoming voice call";
     document.getElementById("inc-status").textContent = "Ringing...";
     showScreen("incoming-call-screen");
+    startRingtone();
     // System notification for incoming call (works when app backgrounded, not fully killed)
     try {
       showYaaroNotification(
@@ -2046,6 +2146,7 @@
 
     callPeerUid = data.from;
     callPeerName = data.fromName;
+    stopRingtone();
     setupCallUI(data.fromName, "Connecting...", callType);
     showScreen("call-screen");
 
@@ -2118,6 +2219,7 @@
   }
 
   function rejectCall(isTimeout) {
+    stopRingtone();
     if (incomingCallData) {
       const data = incomingCallData;
       currentCallId = data.callId;
@@ -2135,6 +2237,7 @@
   }
 
   function endCall(skipStatus) {
+    stopRingtone();
     const wasConnected = callSecs > 0;
     const endedCallId = currentCallId;
     const endedPeerUid = callPeerUid;
@@ -2289,12 +2392,25 @@
   }
 
   function toggleMute() {
-    if (!localStream) return;
+    // LOCAL ONLY — never touch remote tracks / receivers / Firebase
+    if (!localStream && !pc) return;
     callMuted = !callMuted;
-    localStream.getAudioTracks().forEach(t => { t.enabled = !callMuted; });
+    try {
+      if (localStream) {
+        localStream.getAudioTracks().forEach(t => { t.enabled = !callMuted; });
+      }
+      // Also set on sender track only (outgoing)
+      if (pc) {
+        pc.getSenders().forEach(s => {
+          if (s.track && s.track.kind === "audio") s.track.enabled = !callMuted;
+        });
+      }
+    } catch (e) {}
     const btn = document.getElementById("mute-btn");
-    btn.textContent = callMuted ? "🔇" : "🎤";
-    btn.className = "call-btn" + (callMuted ? " danger-active" : "");
+    if (btn) {
+      btn.textContent = callMuted ? "🔇" : "🎤";
+      btn.className = "call-btn" + (callMuted ? " danger-active" : "");
+    }
     const wave = document.getElementById("call-wave");
     if (wave) wave.classList.toggle("paused", callMuted || callType === "video");
   }
@@ -2302,21 +2418,35 @@
   let usingFrontCam = true;
 
   function toggleCam() {
-    if (!localStream) return;
+    // LOCAL ONLY — never touch remote tracks / receivers
+    if (!localStream && !pc) return;
     callCamOff = !callCamOff;
-    localStream.getVideoTracks().forEach(t => { t.enabled = !callCamOff; });
+    try {
+      if (localStream) {
+        localStream.getVideoTracks().forEach(t => { t.enabled = !callCamOff; });
+      }
+      if (pc) {
+        pc.getSenders().forEach(s => {
+          if (s.track && s.track.kind === "video") s.track.enabled = !callCamOff;
+        });
+      }
+    } catch (e) {}
     const btn = document.getElementById("cam-btn");
-    btn.textContent = "📷";
-    btn.className = "call-btn" + (callCamOff ? " danger-active" : "");
+    if (btn) {
+      btn.textContent = "📷";
+      btn.className = "call-btn" + (callCamOff ? " danger-active" : "");
+    }
     const lv = document.getElementById("local-video");
     const lf = document.getElementById("local-fallback");
-    if (callCamOff) {
-      lv.style.display = "none";
-      lf.style.display = "flex";
-      lf.textContent = (userData?.username || "?")[0].toUpperCase();
-    } else {
-      lv.style.display = "block";
-      lf.style.display = "none";
+    if (lv && lf) {
+      if (callCamOff) {
+        lv.style.display = "none";
+        lf.style.display = "flex";
+        lf.textContent = (userData?.username || "?")[0].toUpperCase();
+      } else {
+        lv.style.display = "block";
+        lf.style.display = "none";
+      }
     }
   }
 
