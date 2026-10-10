@@ -2459,31 +2459,47 @@
     if (!stream) return;
     const vtracks = stream.getVideoTracks();
     vtracks.forEach(track => {
-      const apply = () => {
+      let muteTimer = null;
+      const showFallback = () => {
         const remoteVideo = document.getElementById("remote-video");
         const remoteFallback = document.getElementById("remote-fallback");
-        if (!remoteVideo || !remoteFallback) return;
-        const muted = track.muted || track.readyState === "ended" || track.enabled === false;
-        if (callType === "video" && muted) {
-          // Keep call UI; show avatar instead of black video
-          remoteVideo.style.display = "none";
-          remoteFallback.style.display = "flex";
-          const av = document.getElementById("remote-fallback-av");
-          if (av) {
-            const name = callPeerName || "User";
-            av.textContent = name[0].toUpperCase();
-          }
-        } else if (callType === "video" && !muted) {
-          remoteVideo.style.display = "block";
-          remoteFallback.style.display = "none";
+        if (!remoteVideo || !remoteFallback || callType !== "video") return;
+        remoteVideo.style.display = "none";
+        remoteFallback.style.display = "flex";
+        const av = document.getElementById("remote-fallback-av");
+        if (av) av.textContent = (callPeerName || "User")[0].toUpperCase();
+      };
+      const showVideo = () => {
+        const remoteVideo = document.getElementById("remote-video");
+        const remoteFallback = document.getElementById("remote-fallback");
+        if (!remoteVideo || !remoteFallback || callType !== "video") return;
+        remoteVideo.style.display = "block";
+        remoteFallback.style.display = "none";
+      };
+      const apply = () => {
+        // Only react to sustained camera-off — ignore short glitches during peer track replace
+        const off = track.readyState === "ended" || track.enabled === false;
+        const softMute = track.muted === true;
+        if (off) {
+          if (muteTimer) clearTimeout(muteTimer);
+          muteTimer = null;
+          showFallback();
+        } else if (softMute) {
+          if (muteTimer) clearTimeout(muteTimer);
+          muteTimer = setTimeout(() => {
+            if (track.muted || track.enabled === false || track.readyState === "ended") showFallback();
+          }, 1200);
+        } else {
+          if (muteTimer) clearTimeout(muteTimer);
+          muteTimer = null;
+          showVideo();
         }
       };
       track.addEventListener("mute", apply);
       track.addEventListener("unmute", apply);
       track.addEventListener("ended", apply);
-      // Poll enabled flag (some browsers don't fire mute on enabled=false)
       if (track._yaaroPoll) clearInterval(track._yaaroPoll);
-      track._yaaroPoll = setInterval(apply, 800);
+      track._yaaroPoll = setInterval(apply, 1000);
       apply();
     });
   }
@@ -2547,83 +2563,132 @@
     }
   }
 
-  async function switchCamera() {
-    if (callType !== "video" || !pc || !localStream) return;
-    const btn = document.getElementById("switch-cam-btn");
-    if (btn) {
-      btn.classList.add("active");
-      setTimeout(() => btn.classList.remove("active"), 300);
-    }
-    const wantFront = !usingFrontCam; // toggle target
-    try {
-      // Stop current video track first — some Android devices fail if both cams open
-      const oldTrack = localStream.getVideoTracks()[0];
-      const oldSettings = oldTrack && oldTrack.getSettings ? oldTrack.getSettings() : {};
-      if (oldTrack) {
-        try { oldTrack.stop(); } catch (e) {}
-        try { localStream.removeTrack(oldTrack); } catch (e) {}
-      }
+  let cameraSwitching = false;
 
-      let newStream = null;
+  async function switchCamera() {
+    // LOCAL ONLY — never touches remoteStream, remote tracks, or peer controls
+    if (callType !== "video" || !pc || !localStream) return;
+    if (cameraSwitching) return;
+    cameraSwitching = true;
+    const btn = document.getElementById("switch-cam-btn");
+    if (btn) btn.classList.add("active");
+
+    const oldTrack = localStream.getVideoTracks()[0] || null;
+    const oldSettings = (oldTrack && oldTrack.getSettings) ? oldTrack.getSettings() : {};
+    let newStream = null;
+
+    try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const cams = devices.filter(d => d.kind === "videoinput");
 
+      // Prefer next camera by deviceId (does not affect remote phone)
       if (cams.length >= 2) {
         const currentId = oldSettings.deviceId || null;
         let idx = cams.findIndex(c => c.deviceId === currentId);
-        if (idx < 0) idx = 0;
+        if (idx < 0) idx = usingFrontCam ? 0 : Math.min(1, cams.length - 1);
         const next = cams[(idx + 1) % cams.length];
         newStream = await navigator.mediaDevices.getUserMedia({
           audio: false,
-          video: { deviceId: { ideal: next.deviceId }, width: { ideal: 640 }, height: { ideal: 480 } }
+          video: {
+            deviceId: { exact: next.deviceId },
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
         }).catch(() => navigator.mediaDevices.getUserMedia({
           audio: false,
           video: { deviceId: next.deviceId }
         }));
       } else {
+        const wantFront = !usingFrontCam;
         const facing = wantFront ? "user" : "environment";
         newStream = await navigator.mediaDevices.getUserMedia({
           audio: false,
-          video: { facingMode: { ideal: facing }, width: { ideal: 640 }, height: { ideal: 480 } }
+          video: {
+            facingMode: { exact: facing },
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
         }).catch(() => navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: facing }
+        })).catch(() => navigator.mediaDevices.getUserMedia({
           audio: false,
           video: true
         }));
       }
 
-      if (!newStream || !newStream.getVideoTracks()[0]) {
-        throw new Error("No video track");
-      }
-      usingFrontCam = wantFront;
-      await applyNewVideoTrack(newStream);
-    } catch (e) {
-      console.error("switchCamera failed", e);
-      // Try to restore any camera so user is not left without video
+      const newTrack = newStream && newStream.getVideoTracks()[0];
+      if (!newTrack) throw new Error("No local video track");
+
+      // Update facing flag from actual device if possible
       try {
-        const fallback = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
-        await applyNewVideoTrack(fallback);
-      } catch (e2) {}
+        const s = newTrack.getSettings ? newTrack.getSettings() : {};
+        if (s.facingMode === "user") usingFrontCam = true;
+        else if (s.facingMode === "environment") usingFrontCam = false;
+        else usingFrontCam = !usingFrontCam;
+      } catch (e) {
+        usingFrontCam = !usingFrontCam;
+      }
+
+      // Replace ONLY the outgoing sender track (what the other person sees of YOU)
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+      if (sender) {
+        await sender.replaceTrack(newTrack);
+      }
+
+      // Update localStream + local preview ONLY (never remote-video / remoteStream)
+      if (oldTrack) {
+        try { localStream.removeTrack(oldTrack); } catch (e) {}
+        try { oldTrack.stop(); } catch (e) {}
+      }
+      // Drop extra tracks from temporary stream
+      newStream.getTracks().forEach(t => {
+        if (t !== newTrack) { try { t.stop(); } catch (e) {} }
+      });
+      localStream.addTrack(newTrack);
+      if (callCamOff) newTrack.enabled = false;
+
+      const lv = document.getElementById("local-video");
+      if (lv) {
+        lv.srcObject = localStream;
+        if (!callCamOff) lv.style.display = "block";
+      }
+      const lf = document.getElementById("local-fallback");
+      if (lf && !callCamOff) lf.style.display = "none";
+
+      // Explicit: do NOT touch remote-video or remoteStream
+    } catch (e) {
+      console.error("switchCamera local-only failed", e);
       const st = document.getElementById("call-status");
       if (st) {
         const prev = st.textContent;
         st.textContent = "Camera switch failed on this device";
-        setTimeout(() => { if (st) st.textContent = prev; }, 2000);
+        setTimeout(() => { if (st.textContent.indexOf("Camera switch") === 0) st.textContent = prev; }, 2000);
       }
+      // If we stopped nothing yet, leave existing local track as-is
+    } finally {
+      cameraSwitching = false;
+      if (btn) setTimeout(() => btn.classList.remove("active"), 200);
     }
   }
 
+  // applyNewVideoTrack kept only if other code calls it — local-only
   async function applyNewVideoTrack(newStream) {
+    if (!newStream || !localStream || !pc) return;
     const newTrack = newStream.getVideoTracks()[0];
     if (!newTrack) return;
     const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
     if (sender) await sender.replaceTrack(newTrack);
-    const oldTrack = localStream.getVideoTracks()[0];
-    if (oldTrack) {
-      localStream.removeTrack(oldTrack);
-      oldTrack.stop();
+    localStream.getVideoTracks().forEach(t => {
+      if (t !== newTrack) {
+        try { localStream.removeTrack(t); } catch (e) {}
+        try { t.stop(); } catch (e) {}
+      }
+    });
+    if (!localStream.getVideoTracks().includes(newTrack)) {
+      localStream.addTrack(newTrack);
     }
-    localStream.addTrack(newTrack);
-    newStream.getTracks().forEach(t => { if (t !== newTrack) t.stop(); });
+    newStream.getTracks().forEach(t => { if (t !== newTrack) try { t.stop(); } catch (e) {} });
     const lv = document.getElementById("local-video");
     if (lv) {
       lv.srcObject = localStream;
