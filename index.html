@@ -943,6 +943,7 @@
           showScreen("chats-screen"); loadUsers();
           listenForCalls(); loadCallHistory();
           startDeliveryAck();
+          saveFcmToken();
           try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch(e) {}
         } else {
           userData = null;
@@ -1496,7 +1497,15 @@
     if (userData) db.ref("unread/" + userData.uid + "/" + room).set(0);
   }
 
-
+function saveFcmToken() {
+    try {
+      if (!userData) return;
+      if (!(window.YaaroAndroid && typeof YaaroAndroid.getFcmToken === "function")) return;
+      const token = YaaroAndroid.getFcmToken();
+      if (!token) return;
+      db.ref("users/" + userData.uid + "/fcmToken").set(token);
+    } catch (e) {}
+  }
   // Mark messages as delivered even when chat screen is not open
   let deliveryRoomListeners = {};
   function startDeliveryAck() {
