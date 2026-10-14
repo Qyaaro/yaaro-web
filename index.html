@@ -2148,7 +2148,32 @@ function saveFcmToken() {
       status: "ringing",
       time: Date.now()
     });
+   // Send incoming-call push through Cloudflare Worker
+    try {
+      const idToken = await auth.currentUser.getIdToken();
 
+      const pushResponse = await fetch(
+        "https://yaaro-call-push.aryan3765955.workers.dev/",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${idToken}`
+          },
+          body: JSON.stringify({
+            callId: currentCallId,
+            toUid: currentChat.uid,
+            type: callType
+          })
+        }
+      );
+
+      const pushResult = await pushResponse.json();
+      console.log("Yaaro push:", pushResponse.status, pushResult);
+    } catch (error) {
+      console.error("Yaaro push failed:", error);
+    }
+    
     // Listen for answer
     db.ref("calls/" + currentCallId + "/answer").on("value", async snap => {
       const ans = snap.val();
