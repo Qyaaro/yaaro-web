@@ -2001,8 +2001,15 @@ function saveFcmToken() {
       }
     } catch (e) {}
   }
-
   function stopRingtone() {
+  try {
+    if (window.YaaroAndroid &&
+        typeof window.YaaroAndroid.stopRingtone === "function") {
+        window.YaaroAndroid.stopRingtone();
+    }
+} catch (e) {
+    console.log("Native ringtone stop:", e);
+}
     try {
       if (ringtoneInterval) { clearInterval(ringtoneInterval); ringtoneInterval = null; }
       if (ringtoneOsc) { try { ringtoneOsc.stop(); } catch(e) {} ringtoneOsc = null; }
