@@ -1975,6 +1975,7 @@ function saveFcmToken() {
 
   function startRingtone() {
     stopRingtone();
+    if (window.YaaroAndroid) return;
     try {
       // Prefer Web Audio beep pattern (works without external file)
       const AC = window.AudioContext || window.webkitAudioContext;
