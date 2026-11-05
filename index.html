@@ -864,7 +864,14 @@
     </div>
     <div style="padding:16px 20px 8px;font-size:14px;color:#8b949e;font-weight:600;">Blocked users</div>
     <div id="blocked-list" style="padding:0 12px 12px;"></div>
-    <div class="info-row" style="cursor:pointer;" onclick="showScreen('profile-screen')"><span>👤 My Profile</span><span>›</span></div>
+    <div class="info-row" style="cursor:pointer;" onclick="showScreen('profile-screen')"><span>👤 My Profile</span><span>›</span></div>    
+    <div class="info-row"
+         style="cursor:pointer;"
+         onclick="chooseYaaroRingtone()">
+   <span>🎵 Call Ringtone</span>
+   <span>Choose ›</span>
+</div>
+
     <div class="info-row"><span>App</span><span>Yaaro</span></div>
     <div class="info-row"><span>Version</span><span>1.0</span></div>
     <div style="padding:24px 20px;">
@@ -894,6 +901,15 @@
   const auth = firebase.auth();
   const db = firebase.database();
   const storage = firebase.storage();
+  
+  function chooseYaaroRingtone() {
+  if (window.YaaroAndroid &&
+      typeof window.YaaroAndroid.chooseRingtone === "function") {
+    window.YaaroAndroid.chooseRingtone();
+  } else {
+    alert("Ringtone selection Android Yaaro app mein available hai.");
+  }
+}
 
   function showYaaroNotification(title, body, tag) {
     try {
