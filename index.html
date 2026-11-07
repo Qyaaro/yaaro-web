@@ -958,6 +958,9 @@
           updateProfile(); startPresence();
           showScreen("chats-screen"); loadUsers();
           listenForCalls(); loadCallHistory();
+          setTimeout(() => {
+    checkNativeAccept();
+}, 1000);   
           startDeliveryAck();
           saveFcmToken();
           try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch(e) {}
@@ -2243,6 +2246,27 @@ function saveFcmToken() {
     }, 45000);
   }
 
+async function checkNativeAccept() {
+  if (!userData || !window.YaaroAndroid ||
+      typeof window.YaaroAndroid.getPendingCallId !== "function") return;
+
+  const callId = window.YaaroAndroid.getPendingCallId();
+  if (!callId || currentCallId) return;
+
+  try {
+    const snap = await db.ref("incoming/" + userData.uid + "/" + callId).once("value");
+    const data = snap.val();
+    if (!data || data.callId !== callId) return;
+
+    const statusSnap = await db.ref("calls/" + callId + "/status").once("value");
+    if (statusSnap.val() !== "ringing") return;
+
+    incomingCallData = { id: callId, ...data };
+    await acceptCall();
+  } catch (e) {
+    console.error("Native Accept failed:", e);
+  }
+}
   
 async function acceptCall() {
   if (!incomingCallData || !userData) return;
