@@ -2243,101 +2243,261 @@ function saveFcmToken() {
     }, 45000);
   }
 
-  async function acceptCall() {
-    if (!incomingCallData || !userData) return;
-    const data = incomingCallData;
-    currentCallId = data.callId;
-    callType = data.type || "voice";
-    isCaller = false;
-    callMuted = false;
-    callCamOff = false;
+async function acceptCall() {
+  if (!incomingCallData || !userData || currentCallId) return;
 
-    try {
-      localStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: callType === "video"
-      });
-    } catch (e) {
-      alert("Microphone permission chahiye");
-      rejectCall();
+  const data = incomingCallData;
+  const callId = data.callId || data.id;
+  const myUid = userData.uid;
+  if (!callId || !data.from) return;
+
+  currentCallId = callId;
+  callType = data.type || "voice";
+  isCaller = false;
+  callMuted = false;
+  callCamOff = false;
+  callPeerUid = data.from;
+  callPeerName = data.fromName;
+
+  const callRef = db.ref("calls/" + callId);
+  const incomingRef = db.ref("incoming/" + myUid + "/" + callId);
+  const remoteCandidatesRef = callRef.child("candidates/" + data.from);
+  const statusRef = callRef.child("status");
+
+  let sessionPc = null;
+  let sessionStream = null;
+  let accepted = false;
+  let localCandidates = [];
+  let remoteCandidateHandler = null;
+  let statusHandler = null;
+
+  function cleanupFailedAccept() {
+    localCandidates = [];
+
+    if (remoteCandidateHandler) {
+      remoteCandidatesRef.off("child_added", remoteCandidateHandler);
+    }
+    if (statusHandler) {
+      statusRef.off("value", statusHandler);
+    }
+
+    if (sessionPc) {
+      sessionPc.onicecandidate = null;
+      sessionPc.ontrack = null;
+      sessionPc.onconnectionstatechange = null;
+      try { sessionPc.close(); } catch (e) {}
+    }
+
+    if (sessionStream) {
+      try {
+        sessionStream.getTracks().forEach(t => t.stop());
+      } catch (e) {}
+    }
+
+    if (pc === sessionPc) pc = null;
+    if (localStream === sessionStream) localStream = null;
+
+    remoteStream = null;
+    if (currentCallId === callId) currentCallId = null;
+    if (incomingCallData === data) incomingCallData = null;
+
+    stopRingtone();
+    showScreen("chats-screen");
+  }
+
+  try {
+    const initial = (await callRef.once("value")).val();
+
+    if (
+      !initial ||
+      initial.status !== "ringing" ||
+      !initial.offer ||
+      initial.to !== myUid
+    ) {
+      cleanupFailedAccept();
+      alert("Call is no longer available");
       return;
     }
 
-    callPeerUid = data.from;
-    callPeerName = data.fromName;
+    sessionStream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: callType === "video"
+    });
+
+    localStream = sessionStream;
+
+    if (currentCallId !== callId) {
+      cleanupFailedAccept();
+      return;
+    }
+
     stopRingtone();
     setupCallUI(data.fromName, "Connecting...", callType);
     showScreen("call-screen");
 
-    // Mark accepted FIRST so child_removed / cancel listeners do not kill the call
-    incomingCallData = null;
-    // Clear incoming notification (safe now)
-    db.ref("incoming/" + userData.uid + "/" + currentCallId).remove();
+    sessionPc = new RTCPeerConnection(ICE_SERVERS);
+    pc = sessionPc;
 
-    pc = new RTCPeerConnection(ICE_SERVERS);
-    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    sessionStream.getTracks().forEach(t => {
+      sessionPc.addTrack(t, sessionStream);
+    });
 
-    pc.ontrack = (e) => {
+    sessionPc.ontrack = e => {
+      if (pc !== sessionPc || !e.streams[0]) return;
+
       const remoteVideo = document.getElementById("remote-video");
       const remoteAudio = document.getElementById("remote-audio");
-      if (e.streams[0]) {
-        remoteStream = e.streams[0];
-        if (callType === "video") {
-          remoteVideo.srcObject = remoteStream;
-          remoteVideo.style.display = "block";
-          document.getElementById("remote-fallback").style.display = "none";
-          attachRemoteTrackMonitor(remoteStream);
-        }
-        remoteAudio.srcObject = remoteStream;
+
+      remoteStream = e.streams[0];
+
+      if (callType === "video") {
+        remoteVideo.srcObject = remoteStream;
+        remoteVideo.style.display = "block";
+        document.getElementById("remote-fallback").style.display = "none";
+        attachRemoteTrackMonitor(remoteStream);
+      }
+
+      remoteAudio.srcObject = remoteStream;
+    };
+
+    sessionPc.onicecandidate = e => {
+      if (
+        !e.candidate ||
+        pc !== sessionPc ||
+        currentCallId !== callId
+      ) return;
+
+      const candidate = e.candidate.toJSON();
+
+      if (!accepted) {
+        localCandidates.push(candidate);
+      } else {
+        callRef.child("candidates/" + myUid)
+          .push(candidate)
+          .catch(console.error);
       }
     };
 
-    pc.onicecandidate = (e) => {
-      if (e.candidate && currentCallId) {
-        db.ref("calls/" + currentCallId + "/candidates/" + userData.uid).push(e.candidate.toJSON());
-      }
-    };
+    sessionPc.onconnectionstatechange = () => {
+      if (pc !== sessionPc || currentCallId !== callId) return;
 
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "connected") {
+      if (sessionPc.connectionState === "connected") {
         document.getElementById("call-status").textContent = "Connected";
         startCallTimer();
-      } else if (pc.connectionState === "failed") {
-        document.getElementById("call-status").textContent = "Call could not be connected";
-        setTimeout(() => endCall(true), 1500);
-      } else if (pc.connectionState === "disconnected") {
-        document.getElementById("call-status").textContent = "Connection lost. Trying to reconnect...";
-        document.getElementById("call-status").className = "call-status connecting";
+      } else if (sessionPc.connectionState === "failed") {
+        document.getElementById("call-status").textContent =
+          "Call could not be connected";
+
+        setTimeout(() => {
+          if (pc === sessionPc && currentCallId === callId) {
+            endCall(true);
+          }
+        }, 1500);
+      } else if (sessionPc.connectionState === "disconnected") {
+        document.getElementById("call-status").textContent =
+          "Connection lost. Trying to reconnect...";
+        document.getElementById("call-status").className =
+          "call-status connecting";
       }
     };
 
-    // Get offer and create answer
-    const callSnap = await db.ref("calls/" + currentCallId).once("value");
-    const callData = callSnap.val();
-    if (!callData || !callData.offer) {
-      endCall(true);
+    await sessionPc.setRemoteDescription(
+      new RTCSessionDescription(initial.offer)
+    );
+
+    const answer = await sessionPc.createAnswer();
+    await sessionPc.setLocalDescription(answer);
+
+    const answerPayload = {
+      type: answer.type,
+      sdp: answer.sdp
+    };
+
+    // Only ringing -> answered
+    const result = await callRef.transaction(cur => {
+      if (
+        !cur ||
+        cur.status !== "ringing" ||
+        cur.to !== myUid
+      ) return;
+
+      cur.answer = answerPayload;
+      cur.status = "answered";
+      cur.answeredAt = Date.now();
+      return cur;
+    }, undefined, false);
+
+    if (
+      !result.committed ||
+      !result.snapshot.val() ||
+      result.snapshot.val().status !== "answered"
+    ) {
+      cleanupFailedAccept();
+      alert("Call is no longer available");
       return;
     }
 
-    await pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    accepted = true;
+    incomingCallData = null;
 
-    await db.ref("calls/" + currentCallId).update({
-      answer: { type: answer.type, sdp: answer.sdp },
-      status: "answered"
-    });
+    remoteCandidateHandler = async snap => {
+      if (pc !== sessionPc || currentCallId !== callId) return;
 
-    // Listen for caller ICE
-    db.ref("calls/" + currentCallId + "/candidates/" + data.from).on("child_added", async snap => {
-      if (!pc) return;
-      try { await pc.addIceCandidate(new RTCIceCandidate(snap.val())); } catch (e) {}
-    });
+      try {
+        await sessionPc.addIceCandidate(
+          new RTCIceCandidate(snap.val())
+        );
+      } catch (e) {
+        console.warn("Remote ICE candidate:", e);
+      }
+    };
 
-    db.ref("calls/" + currentCallId + "/status").on("value", snap => {
-      if (snap.val() === "ended") endCall(true);
-    });
+    remoteCandidatesRef.on(
+      "child_added",
+      remoteCandidateHandler
+    );
+
+    statusHandler = snap => {
+      if (
+        pc === sessionPc &&
+        currentCallId === callId &&
+        snap.val() === "ended"
+      ) {
+        remoteCandidatesRef.off(
+          "child_added",
+          remoteCandidateHandler
+        );
+        statusRef.off("value", statusHandler);
+        endCall(true);
+      }
+    };
+
+    statusRef.on("value", statusHandler);
+
+    const buffered = localCandidates;
+    localCandidates = [];
+
+    for (const candidate of buffered) {
+      callRef.child("candidates/" + myUid)
+        .push(candidate)
+        .catch(console.error);
+    }
+
+    incomingRef.remove().catch(console.error);
+
+  } catch (e) {
+    console.error("Accept call failed:", e);
+
+    if (!accepted) {
+      cleanupFailedAccept();
+      alert("Call connect nahi ho payi. Dobara try karein.");
+    } else {
+      if (pc === sessionPc && currentCallId === callId) {
+        endCall();
+      }
+    }
   }
+}
 
   function rejectCall(isTimeout) {
     stopRingtone();
