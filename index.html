@@ -959,8 +959,9 @@
           showScreen("chats-screen"); loadUsers();
           listenForCalls(); loadCallHistory();
           setTimeout(() => {
-    checkNativeAccept();
-}, 1000);   
+              checkNativeAccept();
+              checkNativeDecline();   
+          }, 1000);   
           startDeliveryAck();
           saveFcmToken();
           try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch(e) {}
@@ -2268,9 +2269,42 @@ nativeAcceptInProgress = true;
     console.error("Native Accept failed:", e);
 } finally {
     nativeAcceptInProgress = false;
+  }
 }
+  let nativeDeclineInProgress = false;
+
+async function checkNativeDecline() {
+    if (!userData || !window.YaaroAndroid ||
+        typeof window.YaaroAndroid.getPendingDeclineCallId !== "function") return;
+
+    const callId = window.YaaroAndroid.getPendingDeclineCallId();
+    if (!callId || nativeDeclineInProgress || currentCallId) return;
+
+    nativeDeclineInProgress = true;
+
+    try {
+        const snap = await db.ref(
+            "incoming/" + userData.uid + "/" + callId
+        ).once("value");
+
+        const data = snap.val();
+        if (!data || data.callId !== callId) return;
+
+        const statusSnap = await db.ref(
+            "calls/" + callId + "/status"
+        ).once("value");
+
+        if (statusSnap.val() !== "ringing") return;
+
+        incomingCallData = { id: callId, ...data };
+        rejectCall(false);
+
+    } catch (e) {
+        console.error("Native Decline failed:", e);
+    } finally {
+        nativeDeclineInProgress = false;
+    }
 }
-  
 async function acceptCall() {
   if (!incomingCallData || !userData) return;
   const data = incomingCallData;
