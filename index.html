@@ -941,6 +941,27 @@
     return p.length >= 6 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p) && /[!@#$%^&*]/.test(p);
   }
 
+async function syncYaaroNativeAuth(user) {
+    if (!window.YaaroAndroid ||
+        typeof window.YaaroAndroid.setFirebaseIdToken !== "function") return;
+
+    if (!user) {
+        window.YaaroAndroid.setFirebaseIdToken("");
+        window.YaaroAndroid.setFirebaseUid("");
+        return;
+    }
+
+    try {
+        const token = await user.getIdToken();
+        window.YaaroAndroid.setFirebaseUid(user.uid);
+        window.YaaroAndroid.setFirebaseIdToken(token);
+    } catch (e) {
+        console.error("Native auth sync failed:", e);
+    }
+}
+
+auth.onIdTokenChanged(syncYaaroNativeAuth);
+  
   let authReady = false;
   auth.onAuthStateChanged(async (user) => {
     try {
