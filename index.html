@@ -2245,14 +2245,15 @@ function saveFcmToken() {
       }
     }, 45000);
   }
-
+let nativeAcceptInProgress = false;
 async function checkNativeAccept() {
   if (!userData || !window.YaaroAndroid ||
       typeof window.YaaroAndroid.getPendingCallId !== "function") return;
 
   const callId = window.YaaroAndroid.getPendingCallId();
   if (!callId || currentCallId) return;
-
+ if (nativeAcceptInProgress) return;
+nativeAcceptInProgress = true;
   try {
     const snap = await db.ref("incoming/" + userData.uid + "/" + callId).once("value");
     const data = snap.val();
@@ -2263,9 +2264,11 @@ async function checkNativeAccept() {
 
     incomingCallData = { id: callId, ...data };
     await acceptCall();
-  } catch (e) {
+   } catch (e) {
     console.error("Native Accept failed:", e);
-  }
+} finally {
+    nativeAcceptInProgress = false;
+}
 }
   
 async function acceptCall() {
