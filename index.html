@@ -2274,37 +2274,64 @@ nativeAcceptInProgress = true;
   let nativeDeclineInProgress = false;
 
 async function checkNativeDecline() {
-    if (!userData || !window.YaaroAndroid ||
-        typeof window.YaaroAndroid.getPendingDeclineCallId !== "function") return;
+  if (
+    !userData ||
+    !window.YaaroAndroid ||
+    typeof window.YaaroAndroid.getPendingDeclineCallId !== "function" ||
+    nativeDeclineInProgress
+  ) return;
 
-    const callId = window.YaaroAndroid.getPendingDeclineCallId();
-    if (!callId || nativeDeclineInProgress || currentCallId) return;
+  const callId = window.YaaroAndroid.getPendingDeclineCallId();
+  if (!callId) return;
 
-    nativeDeclineInProgress = true;
+  // Do not interfere with another active call.
+  if (currentCallId && currentCallId !== callId) return;
 
-    try {
-        const snap = await db.ref(
-            "incoming/" + userData.uid + "/" + callId
-        ).once("value");
+  nativeDeclineInProgress = true;
 
-        const data = snap.val();
-        if (!data || data.callId !== callId) return;
+  try {
+    const incomingRef = db.ref(
+      "incoming/" + userData.uid + "/" + callId
+    );
 
-        const statusSnap = await db.ref(
-            "calls/" + callId + "/status"
-        ).once("value");
+    const snap = await incomingRef.once("value");
+    const data = snap.val();
 
-        if (statusSnap.val() !== "ringing") return;
+    if (!data || data.callId !== callId) return;
 
-        incomingCallData = { id: callId, ...data };
-        rejectCall(false);
+    const statusRef = db.ref("calls/" + callId + "/status");
 
-    } catch (e) {
-        console.error("Native Decline failed:", e);
-    } finally {
-        nativeDeclineInProgress = false;
+    // Reject only if the call is still ringing.
+    const result = await statusRef.transaction(status => {
+      return status === "ringing" ? "rejected" : undefined;
+    });
+
+    if (!result.committed) return;
+
+    await incomingRef.remove();
+
+    stopRingtone();
+
+    if (incomingCallData &&
+        incomingCallData.callId === callId) {
+      incomingCallData = null;
     }
+
+    if (currentCallId === callId) {
+      currentCallId = null;
+    }
+
+    showScreen("chats-screen");
+
+    console.log("Native Decline successful:", callId);
+
+  } catch (error) {
+    console.error("Native Decline failed:", error);
+  } finally {
+    nativeDeclineInProgress = false;
+  }
 }
+
 async function acceptCall() {
   if (!incomingCallData || !userData) return;
   const data = incomingCallData;
