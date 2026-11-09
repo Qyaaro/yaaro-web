@@ -2267,31 +2267,48 @@ function saveFcmToken() {
       }
     }, 45000);
   }
+
 let nativeAcceptInProgress = false;
+
 async function checkNativeAccept() {
-  if (!userData || !window.YaaroAndroid ||
-      typeof window.YaaroAndroid.getPendingCallId !== "function") return;
+    if (!userData || !window.YaaroAndroid ||
+        typeof window.YaaroAndroid.getPendingCallId !== "function") return;
 
-  const callId = window.YaaroAndroid.getPendingCallId();
-  if (!callId || currentCallId) return;
- if (nativeAcceptInProgress) return;
-nativeAcceptInProgress = true;
-  try {
-    const snap = await db.ref("incoming/" + userData.uid + "/" + callId).once("value");
-    const data = snap.val();
-    if (!data || data.callId !== callId) return;
+    if (nativeAcceptInProgress || currentCallId) return;
 
-    const statusSnap = await db.ref("calls/" + callId + "/status").once("value");
-    if (statusSnap.val() !== "ringing") return;
+    const callId = window.YaaroAndroid.getPendingCallId();
+    if (!callId) return;
 
-    incomingCallData = { id: callId, ...data };
-    await acceptCall();
-   } catch (e) {
-    console.error("Native Accept failed:", e);
-} finally {
-    nativeAcceptInProgress = false;
-  }
+    nativeAcceptInProgress = true;
+
+    try {
+        const snap = await db.ref(
+            "incoming/" + userData.uid + "/" + callId
+        ).once("value");
+
+        const data = snap.val();
+        if (!data || data.callId !== callId) return;
+
+        const statusSnap = await db.ref(
+            "calls/" + callId + "/status"
+        ).once("value");
+
+        if (statusSnap.val() !== "ringing") return;
+
+        if (incomingCallData &&
+            incomingCallData.callId !== callId) return;
+
+        incomingCallData = { id: callId, ...data };
+
+        await acceptCall();
+
+    } catch (e) {
+        console.error("Native Accept failed:", e);
+    } finally {
+        nativeAcceptInProgress = false;
+    }
 }
+
   let nativeDeclineInProgress = false;
 
 async function checkNativeDecline() {
