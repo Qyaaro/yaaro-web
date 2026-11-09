@@ -1230,10 +1230,37 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
       renderChats();
     });
   }
+  let usersCacheReady = false;
+  let messagesCacheReady = false;
+  function saveChatsCache() {
+  if (!userData?.uid || !usersCacheReady || !messagesCacheReady) return;
 
+  try {
+    localStorage.setItem(
+      "yaaro_chats_" + userData.uid,
+      JSON.stringify({
+        users: usersCache,
+        messages: lastMsgs
+      })
+    );
+  } catch (e) {
+    console.warn("Chat cache save failed", e);
+  }
+}
   function loadUsers() {
-    db.ref("users").on("value", s => { usersCache = s.val() || {}; renderChats(); renderContacts(); });
-    db.ref("lastMessages").on("value", s => { lastMsgs = s.val() || {}; renderChats(); });
+    db.ref("users").on("value", s => {
+    usersCache = s.val() || {};
+    usersCacheReady = true;
+    saveChatsCache();
+    renderChats();
+    renderContacts();
+});
+    db.ref("lastMessages").on("value", s => {
+    lastMsgs = s.val() || {};
+    messagesCacheReady = true;
+    saveChatsCache();
+    renderChats();
+});
     loadUnread();
     if (userData) {
       db.ref("pinned/" + userData.uid).on("value", s => { pinnedChats = s.val() || {}; renderChats(); });
