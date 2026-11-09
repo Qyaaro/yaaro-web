@@ -2373,6 +2373,8 @@ try {
 
         const data = snap.val();
 nativeAcceptDebug("STEP 5: Incoming data " + (data ? "FOUND" : "MISSING"));
+nativeAcceptDebug("STEP 5: Firebase=" + (data ? "FOUND" : "MISSING") + " | Screen=" + (incomingCallData ? ((incomingCallData.callId || incomingCallData.id) === callId ? "MATCH" : "DIFFERENT") : "EMPTY"));
+
         if (!data ||
             (data.callId && data.callId !== callId)) return;
 
