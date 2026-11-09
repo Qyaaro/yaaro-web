@@ -2372,7 +2372,7 @@ try {
         ).once("value");
 
         const data = snap.val();
-
+nativeAcceptDebug("STEP 5: Incoming data " + (data ? "FOUND" : "MISSING"));
         if (!data ||
             (data.callId && data.callId !== callId)) return;
 
@@ -2392,7 +2392,7 @@ try {
             ...data,
             callId
         };
-
+nativeAcceptDebug("STEP 6: Starting automatic Accept");
         await acceptCall();
 
         const answered = await db.ref(
