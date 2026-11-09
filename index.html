@@ -1232,15 +1232,19 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
   }
   let usersCacheReady = false;
   let messagesCacheReady = false;
+  let blockedCacheReady = false;
+  let hiddenCacheReady = false;
   function saveChatsCache() {
-  if (!userData?.uid || !usersCacheReady || !messagesCacheReady) return;
+  if (!userData?.uid || !usersCacheReady || !messagesCacheReady || !blockedCacheReady || !hiddenCacheReady) return;
 
   try {
     localStorage.setItem(
       "yaaro_chats_" + userData.uid,
       JSON.stringify({
-        users: usersCache,
-        messages: lastMsgs
+      users: usersCache,
+      messages: lastMsgs,
+      blocked: blockedUsers || {},
+      hidden: hiddenChats || {}
       })
     );
   } catch (e) {
@@ -1248,6 +1252,30 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
   }
 }
   function loadUsers() {
+    if (!userData?.uid || auth.currentUser?.uid !== userData.uid) return;
+
+try {
+  const saved = localStorage.getItem("yaaro_chats_" + userData.uid);
+
+  if (saved) {
+    const cache = JSON.parse(saved);
+
+    if (
+  cache.users &&
+  cache.messages &&
+  cache.blocked &&
+  cache.hidden
+) {
+  usersCache = cache.users;
+  lastMsgs = cache.messages;
+  blockedUsers = cache.blocked;
+  hiddenChats = cache.hidden;
+  renderChats();
+}
+  }
+} catch (e) {
+  console.warn("Chat cache restore failed", e);
+}
     db.ref("users").on("value", s => {
     usersCache = s.val() || {};
     usersCacheReady = true;
@@ -1263,9 +1291,19 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
 });
     loadUnread();
     if (userData) {
-      db.ref("pinned/" + userData.uid).on("value", s => { pinnedChats = s.val() || {}; renderChats(); });
-      db.ref("blocked/" + userData.uid).on("value", s => { blockedUsers = s.val() || {}; renderChats(); renderContacts(); renderBlockedList(); });
-      db.ref("hiddenChats/" + userData.uid).on("value", s => { hiddenChats = s.val() || {}; renderChats(); });
+    db.ref("pinned/" + userData.uid).on("value", s => { pinnedChats = s.val() || {}; renderChats(); });
+    db.ref("blocked/" + userData.uid).on("value", s => {
+    blockedUsers = s.val() || {};
+    blockedCacheReady = true;
+    saveChatsCache();
+    renderChats();
+});
+    db.ref("hiddenChats/" + userData.uid).on("value", s => {
+    hiddenChats = s.val() || {};
+    hiddenCacheReady = true;
+    saveChatsCache();
+    renderChats();
+});
     }
   }
 
