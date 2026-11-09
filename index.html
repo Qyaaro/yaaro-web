@@ -1932,6 +1932,10 @@ function saveFcmToken() {
         return;
       }
       const callId = data.callId || snap.key;
+      if (currentCallId === callId ||
+         (incomingCallData &&
+         (incomingCallData.callId === callId ||
+          incomingCallData.id === callId))) return;
       // BUSY POLICY: already ringing or in active call → auto-reject second caller
       if (currentCallId || incomingCallData) {
         db.ref("calls/" + callId).update({ status: "busy", endedAt: Date.now() });
@@ -1945,6 +1949,10 @@ function saveFcmToken() {
           snap.ref.remove();
           return;
         }
+        if (currentCallId === callId ||
+           (incomingCallData &&
+           (incomingCallData.callId === callId ||
+           incomingCallData.id === callId))) return;
         if (currentCallId || incomingCallData) {
           db.ref("calls/" + callId).update({ status: "busy", endedAt: Date.now() });
           snap.ref.remove();
