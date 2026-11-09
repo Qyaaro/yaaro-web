@@ -2450,25 +2450,10 @@ async function acceptCall() {
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
 
-const acceptResult = await db.ref("calls/" + currentCallId)
-  .transaction(call => {
-    if (!call || call.status !== "ringing") {
-      return;
-    }
-
-    call.answer = {
-      type: answer.type,
-      sdp: answer.sdp
-    };
-    call.status = "answered";
-    return call;
-  }, undefined, false);
-
-if (!acceptResult.committed) {
-  console.warn("Call no longer ringing. Accept cancelled.");
-  endCall(true);
-  return;
-}
+await db.ref("calls/" + currentCallId).update({
+  answer: { type: answer.type, sdp: answer.sdp },
+  status: "answered"
+});
 
   // Listen for caller ICE
   db.ref("calls/" + currentCallId + "/candidates/" + data.from).on("child_added", async snap => {
