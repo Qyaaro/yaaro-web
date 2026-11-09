@@ -972,8 +972,44 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
           authReady = true;
           return;
         }
-        const snap = await db.ref("users/" + user.uid).once("value");
-        const d = snap.val();
+        const profileKey = "yaaro_profile_" + user.uid;
+        let d = null;
+
+  try {
+  const saved = localStorage.getItem(profileKey);
+  if (saved) d = JSON.parse(saved);
+} catch (e) {}
+
+  if (!d) {
+  const snap = await db.ref("users/" + user.uid).once("value");
+  d = snap.val();
+    if (d) {
+    try {
+      localStorage.setItem(profileKey, JSON.stringify(d));
+    } catch (e) {}
+  }
+}
+    if (d) {
+  db.ref("users/" + user.uid).once("value")
+    .then((snap) => {
+      const fresh = snap.val();
+
+      if (!fresh || auth.currentUser?.uid !== user.uid) return;
+
+      try {
+        localStorage.setItem(profileKey, JSON.stringify(fresh));
+      } catch (e) {}
+
+      if (userData && auth.currentUser?.uid === user.uid) {
+        Object.assign(userData, fresh);
+        userData.email = user.email;
+        updateProfile();
+      }
+    })
+    .catch((e) => {
+      console.warn("Profile refresh failed", e);
+    });
+}
         if (d) {
           userData = d; userData.email = user.email;
           updateProfile(); startPresence();
