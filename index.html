@@ -979,10 +979,14 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
           updateProfile(); startPresence();
           showScreen("chats-screen"); loadUsers();
           listenForCalls(); loadCallHistory();
-          setTimeout(() => {
-  checkNativeAccept();
-  checkNativeDecline();
-}, 1000);
+          
+      checkNativeAccept();
+      scheduleNativeAcceptRetry();
+
+     setTimeout(() => {
+     checkNativeDecline();
+     }, 1000);
+
           startDeliveryAck();
           saveFcmToken();
           try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch(e) {}
@@ -2269,15 +2273,54 @@ function saveFcmToken() {
   }
 
 let nativeAcceptInProgress = false;
+let nativeAcceptRetryTimer = null;
+
+function scheduleNativeAcceptRetry() {
+    if (nativeAcceptRetryTimer) return;
+
+    let attempts = 0;
+
+    nativeAcceptRetryTimer = setInterval(() => {
+        if (++attempts > 45) {
+            clearInterval(nativeAcceptRetryTimer);
+            nativeAcceptRetryTimer = null;
+            return;
+        }
+
+        checkNativeAccept();
+    }, 1000);
+}
 
 async function checkNativeAccept() {
-    if (!userData || !window.YaaroAndroid ||
-        typeof window.YaaroAndroid.getPendingCallId !== "function") return;
-    
-    if (nativeAcceptInProgress || currentCallId) return;
+    const bridge = window.YaaroAndroid;
 
-    const callId = window.YaaroAndroid.getPendingCallId();
+    if (!bridge ||
+        typeof bridge.getPendingCallId !== "function") return;
+
+    const callId = bridge.getPendingCallId();
     if (!callId) return;
+
+    if (!userData || !auth.currentUser) {
+        scheduleNativeAcceptRetry();
+        return;
+    }
+
+    if (nativeAcceptInProgress) return;
+
+    if (currentCallId) {
+        if (currentCallId === callId) {
+            const status = await db.ref(
+                "calls/" + callId + "/status"
+            ).once("value").catch(() => null);
+
+            if (status && status.val() === "answered") {
+                if (typeof bridge.completePendingAccept === "function") {
+                    bridge.completePendingAccept(callId);
+                }
+            }
+        }
+        return;
+    }
 
     nativeAcceptInProgress = true;
 
@@ -2287,7 +2330,9 @@ async function checkNativeAccept() {
         ).once("value");
 
         const data = snap.val();
-        if (!data || data.callId !== callId) return;
+
+        if (!data ||
+            (data.callId && data.callId !== callId)) return;
 
         const statusSnap = await db.ref(
             "calls/" + callId + "/status"
@@ -2296,14 +2341,37 @@ async function checkNativeAccept() {
         if (statusSnap.val() !== "ringing") return;
 
         if (incomingCallData &&
-            incomingCallData.callId !== callId) return;
+            (incomingCallData.callId || incomingCallData.id) !== callId) {
+            return;
+        }
 
-        incomingCallData = { id: callId, ...data };
+        incomingCallData = {
+            id: callId,
+            ...data,
+            callId
+        };
 
         await acceptCall();
 
+        const answered = await db.ref(
+            "calls/" + callId + "/status"
+        ).once("value");
+
+        if (answered.val() === "answered" &&
+            typeof bridge.completePendingAccept === "function") {
+
+            bridge.completePendingAccept(callId);
+
+            if (nativeAcceptRetryTimer) {
+                clearInterval(nativeAcceptRetryTimer);
+                nativeAcceptRetryTimer = null;
+            }
+        }
+
     } catch (e) {
         console.error("Native Accept failed:", e);
+        scheduleNativeAcceptRetry();
+
     } finally {
         nativeAcceptInProgress = false;
     }
