@@ -1012,6 +1012,7 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
 }
         if (d) {
           userData = d; userData.email = user.email;
+          try { localStorage.setItem("yaaro_last_uid", user.uid); } catch (e) {}
           updateProfile(); startPresence();
           showScreen("chats-screen"); loadUsers();
           listenForCalls(); loadCallHistory();
@@ -1028,11 +1029,13 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
           try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch(e) {}
         } else {
           userData = null;
+          try { localStorage.removeItem("yaaro_last_uid"); } catch (e) {}
           auth.signOut();
           showScreen("login-screen");
         }
       } else {
         userData = null;
+        try { localStorage.removeItem("yaaro_last_uid"); } catch (e) {}
         // Only show login after first auth resolution (not before)
         showScreen("login-screen");
       }
@@ -3435,6 +3438,29 @@ if (endedIsCaller && endedCallId && endedPeerUid && !wasConnected) {
     if (n-d < 172800000) return "Yesterday";
     return d.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit"});
   }
+  // Icon tap → turant Chats (cache se)
+  (function bootFromCache() {
+    try {
+      var uid = localStorage.getItem("yaaro_last_uid");
+      if (!uid) return;
+      var profileRaw = localStorage.getItem("yaaro_profile_" + uid);
+      if (!profileRaw) return;
+      var profile = JSON.parse(profileRaw);
+      if (!profile) return;
+      userData = profile;
+      var chatRaw = localStorage.getItem("yaaro_chats_" + uid);
+      if (chatRaw) {
+        var cache = JSON.parse(chatRaw);
+        if (cache.users) usersCache = cache.users;
+        if (cache.messages) lastMsgs = cache.messages;
+        if (cache.blocked) blockedUsers = cache.blocked;
+        if (cache.hidden) hiddenChats = cache.hidden;
+      }
+      if (typeof renderChats === "function") renderChats();
+      if (typeof updateProfile === "function") updateProfile();
+      showScreen("chats-screen");
+    } catch (e) {}
+  })();
 </script>
 </body>
 </html>
