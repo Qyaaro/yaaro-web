@@ -3451,9 +3451,13 @@ if (endedIsCaller && endedCallId && endedPeerUid && !wasConnected) {
         if (cache.blocked) blockedUsers = cache.blocked;
         if (cache.hidden) hiddenChats = cache.hidden;
       }
-      if (typeof renderChats === "function") renderChats();
-      if (typeof updateProfile === "function") updateProfile();
-      showScreen("chats-screen");
+      setTimeout(function () {
+        try {
+          if (typeof renderChats === "function") renderChats();
+          if (typeof updateProfile === "function") updateProfile();
+          showScreen("chats-screen");
+        } catch (e2) {}
+      }, 1000);
     } catch (e) {}
   })();
 </script>
