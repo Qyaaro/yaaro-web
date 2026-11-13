@@ -518,7 +518,7 @@
   <div id="splash-screen" class="screen active"
        style="padding:0;overflow:hidden;background:#0a0e17;align-items:center;justify-content:center;">
     <img
-      src="splash-qyaaro.png"
+      src="splash-qyaaro.png?v=3"
       alt="QYAARO"
       style="width:85%;max-width:340px;height:auto;object-fit:contain;display:block;"
       onerror="this.onerror=null;this.src='qyaaro-logo.png';this.style.width='140px';"
@@ -3452,13 +3452,30 @@ if (endedIsCaller && endedCallId && endedPeerUid && !wasConnected) {
         if (cache.blocked) blockedUsers = cache.blocked;
         if (cache.hidden) hiddenChats = cache.hidden;
       }
-      setTimeout(function () {
+      var goChats = function () {
         try {
           if (typeof renderChats === "function") renderChats();
           if (typeof updateProfile === "function") updateProfile();
           showScreen("chats-screen");
         } catch (e2) {}
-      }, 1000);
+      };
+      var img = document.querySelector("#splash-screen img");
+      var done = false;
+      var finish = function () {
+        if (done) return;
+        done = true;
+        setTimeout(goChats, 400);
+      };
+      setTimeout(finish, 2500);
+      if (img) {
+        if (img.complete && img.naturalWidth) finish();
+        else {
+          img.onload = finish;
+          img.onerror = finish;
+        }
+      } else {
+        finish();
+      }
     } catch (e) {}
   })();
 </script>
