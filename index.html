@@ -943,7 +943,10 @@ async function syncYaaroNativeAuth(user) {
 
     if (!user) {
         window.YaaroAndroid.setFirebaseIdToken("");
+        window.yaaroNativeAuthReady = false;
+        nativeAuthRecoveryAsked = false;
         window.YaaroAndroid.setFirebaseUid("");
+        if (typeof window.YaaroAndroid.signOutNativeFirebase === "function") window.YaaroAndroid.signOutNativeFirebase();
         return;
     }
 
@@ -953,6 +956,36 @@ async function syncYaaroNativeAuth(user) {
         window.YaaroAndroid.setFirebaseIdToken(token);
     } catch (e) {
         console.error("Native auth sync failed:", e);
+    }
+}
+
+// Native authentication is independent of the WebView Firebase session.
+window.onYaaroNativeAuthResult = function(uid, success) {
+    if (!auth.currentUser || auth.currentUser.uid !== uid) return;
+    window.yaaroNativeAuthReady = !!success;
+    if (!success) console.warn("Native Firebase authentication failed; web login remains active");
+};
+
+let nativeAuthRecoveryAsked = false;
+async function ensureNativeFirebaseSession(user) {
+    if (!user || !user.emailVerified || !window.YaaroAndroid ||
+        typeof window.YaaroAndroid.isNativeFirebaseSignedIn !== "function" ||
+        typeof window.YaaroAndroid.signInNativeFirebase !== "function") return;
+    try {
+        if (window.YaaroAndroid.isNativeFirebaseSignedIn(user.uid)) {
+            window.yaaroNativeAuthReady = true;
+            return;
+        }
+        window.yaaroNativeAuthReady = false;
+        if (nativeAuthRecoveryAsked || !user.email) return;
+        nativeAuthRecoveryAsked = true;
+        // A Firebase web ID token is NOT a native Firebase sign-in credential.
+        // Ask the existing user once; never cache or log their password.
+        const password = window.prompt("Native calling ke liye apna QYAARO password dobara daalein (Cancel = skip):");
+        if (!password || auth.currentUser?.uid !== user.uid) return;
+        window.YaaroAndroid.signInNativeFirebase(user.email, password, user.uid);
+    } catch (e) {
+        console.warn("Native Firebase session check unavailable");
     }
 }
 
@@ -968,6 +1001,7 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
           authReady = true;
           return;
         }
+        ensureNativeFirebaseSession(user);
         const profileKey = "yaaro_profile_" + user.uid;
         let d = null;
 
@@ -1014,6 +1048,7 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
           listenForCalls(); loadCallHistory();
           
       checkNativeAccept();
+      checkNativeViewCall();
       scheduleNativeAcceptRetry();
 
      setTimeout(() => {
@@ -1051,7 +1086,7 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
 
     const tryLogin = (email) => {
       auth.signInWithEmailAndPassword(email, pass)
-        .then(c => { btn.disabled = false; btn.textContent = "Login"; if (!c.user.emailVerified) showScreen("verify-screen"); })
+        .then(c => { btn.disabled = false; btn.textContent = "Login"; if (!c.user.emailVerified) showScreen("verify-screen"); else if (window.YaaroAndroid && typeof window.YaaroAndroid.signInNativeFirebase === "function") { try { window.YaaroAndroid.signInNativeFirebase(email, pass, c.user.uid); } catch (e) { console.warn("Native Firebase login unavailable"); } } })
         .catch(e => {
           btn.disabled = false; btn.textContent = "Login";
           err.textContent = e.code.includes("invalid") || e.code.includes("wrong") || e.code.includes("user-not-found") ? "Email/Username ya Password galat" : "Login fail";
@@ -2060,6 +2095,7 @@ function saveFcmToken() {
         }
         incomingCallData = { id: snap.key, ...data };
         showIncomingCall(data);
+        checkNativeViewCall();
         // Stop ringing immediately if caller cancels / ends
         db.ref("calls/" + callId + "/status").on("value", statusSnap => {
           const s = statusSnap.val();
@@ -2529,6 +2565,27 @@ nativeAcceptDebug("STEP 6: Starting automatic Accept");
     }
 }
 
+  // Notification body tap is navigation only; it must never answer a call.
+  function checkNativeViewCall() {
+    const bridge = window.YaaroAndroid;
+    if (!bridge || typeof bridge.getPendingViewCallId !== "function") return;
+    const callId = bridge.getPendingViewCallId();
+    if (!callId || !userData || !auth.currentUser) return;
+
+    let targetScreen = "";
+    if (currentCallId === callId && pc) {
+      targetScreen = "call-screen";
+    } else if (!currentCallId && incomingCallData &&
+               (incomingCallData.callId || incomingCallData.id) === callId) {
+      targetScreen = "incoming-call-screen";
+    }
+    if (!targetScreen || !document.getElementById(targetScreen)) return;
+    showScreen(targetScreen);
+    if (typeof bridge.completePendingView === "function") {
+      bridge.completePendingView(callId);
+    }
+  }
+
   let nativeDeclineInProgress = false;
 
 async function checkNativeDecline() {
@@ -2613,7 +2670,7 @@ async function acceptCall() {
   callPeerUid = data.from;
   callPeerName = data.fromName;
   stopRingtone();
-  setupCallUI(data.fromName, "Connecting...", callType);
+  setupCallUI(data.fromName, "Ringing", callType);
   showScreen("call-screen");
 
   // Mark accepted FIRST so child_removed / cancel listeners do not kill the call
