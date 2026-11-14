@@ -2543,7 +2543,7 @@ nativeAcceptDebug("STEP 6: Starting automatic Accept");
       targetScreen = "call-screen";
     } else if (!currentCallId && incomingCallData &&
                (incomingCallData.callId || incomingCallData.id) === callId) {
-      targetScreen = "incoming-screen";
+      targetScreen = "incoming-call-screen";
     }
     if (!targetScreen || !document.getElementById(targetScreen)) return;
     showScreen(targetScreen);
