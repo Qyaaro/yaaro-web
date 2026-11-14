@@ -944,6 +944,7 @@ async function syncYaaroNativeAuth(user) {
     if (!user) {
         window.YaaroAndroid.setFirebaseIdToken("");
         window.YaaroAndroid.setFirebaseUid("");
+        if (typeof window.YaaroAndroid.signOutNativeFirebase === "function") window.YaaroAndroid.signOutNativeFirebase();
         return;
     }
 
@@ -1052,7 +1053,7 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
 
     const tryLogin = (email) => {
       auth.signInWithEmailAndPassword(email, pass)
-        .then(c => { btn.disabled = false; btn.textContent = "Login"; if (!c.user.emailVerified) showScreen("verify-screen"); })
+        .then(c => { btn.disabled = false; btn.textContent = "Login"; if (!c.user.emailVerified) showScreen("verify-screen"); else if (window.YaaroAndroid && typeof window.YaaroAndroid.signInNativeFirebase === "function") { try { window.YaaroAndroid.signInNativeFirebase(email, pass, c.user.uid); } catch (e) { console.warn("Native Firebase login unavailable"); } } })
         .catch(e => {
           btn.disabled = false; btn.textContent = "Login";
           err.textContent = e.code.includes("invalid") || e.code.includes("wrong") || e.code.includes("user-not-found") ? "Email/Username ya Password galat" : "Login fail";
