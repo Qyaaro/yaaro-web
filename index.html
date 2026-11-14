@@ -1014,6 +1014,7 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
           listenForCalls(); loadCallHistory();
           
       checkNativeAccept();
+      checkNativeViewCall();
       scheduleNativeAcceptRetry();
 
      setTimeout(() => {
@@ -2060,6 +2061,7 @@ function saveFcmToken() {
         }
         incomingCallData = { id: snap.key, ...data };
         showIncomingCall(data);
+        checkNativeViewCall();
         // Stop ringing immediately if caller cancels / ends
         db.ref("calls/" + callId + "/status").on("value", statusSnap => {
           const s = statusSnap.val();
@@ -2529,6 +2531,27 @@ nativeAcceptDebug("STEP 6: Starting automatic Accept");
     }
 }
 
+  // Notification body tap is navigation only; it must never answer a call.
+  function checkNativeViewCall() {
+    const bridge = window.YaaroAndroid;
+    if (!bridge || typeof bridge.getPendingViewCallId !== "function") return;
+    const callId = bridge.getPendingViewCallId();
+    if (!callId || !userData || !auth.currentUser) return;
+
+    let targetScreen = "";
+    if (currentCallId === callId && pc) {
+      targetScreen = "call-screen";
+    } else if (!currentCallId && incomingCallData &&
+               (incomingCallData.callId || incomingCallData.id) === callId) {
+      targetScreen = "incoming-screen";
+    }
+    if (!targetScreen || !document.getElementById(targetScreen)) return;
+    showScreen(targetScreen);
+    if (typeof bridge.completePendingView === "function") {
+      bridge.completePendingView(callId);
+    }
+  }
+
   let nativeDeclineInProgress = false;
 
 async function checkNativeDecline() {
@@ -2613,7 +2636,7 @@ async function acceptCall() {
   callPeerUid = data.from;
   callPeerName = data.fromName;
   stopRingtone();
-  setupCallUI(data.fromName, "Connecting...", callType);
+  setupCallUI(data.fromName, "Ringing", callType);
   showScreen("call-screen");
 
   // Mark accepted FIRST so child_removed / cancel listeners do not kill the call
