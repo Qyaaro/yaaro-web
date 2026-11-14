@@ -943,6 +943,8 @@ async function syncYaaroNativeAuth(user) {
 
     if (!user) {
         window.YaaroAndroid.setFirebaseIdToken("");
+        window.yaaroNativeAuthReady = false;
+        nativeAuthRecoveryAsked = false;
         window.YaaroAndroid.setFirebaseUid("");
         if (typeof window.YaaroAndroid.signOutNativeFirebase === "function") window.YaaroAndroid.signOutNativeFirebase();
         return;
@@ -954,6 +956,36 @@ async function syncYaaroNativeAuth(user) {
         window.YaaroAndroid.setFirebaseIdToken(token);
     } catch (e) {
         console.error("Native auth sync failed:", e);
+    }
+}
+
+// Native authentication is independent of the WebView Firebase session.
+window.onYaaroNativeAuthResult = function(uid, success) {
+    if (!auth.currentUser || auth.currentUser.uid !== uid) return;
+    window.yaaroNativeAuthReady = !!success;
+    if (!success) console.warn("Native Firebase authentication failed; web login remains active");
+};
+
+let nativeAuthRecoveryAsked = false;
+async function ensureNativeFirebaseSession(user) {
+    if (!user || !user.emailVerified || !window.YaaroAndroid ||
+        typeof window.YaaroAndroid.isNativeFirebaseSignedIn !== "function" ||
+        typeof window.YaaroAndroid.signInNativeFirebase !== "function") return;
+    try {
+        if (window.YaaroAndroid.isNativeFirebaseSignedIn(user.uid)) {
+            window.yaaroNativeAuthReady = true;
+            return;
+        }
+        window.yaaroNativeAuthReady = false;
+        if (nativeAuthRecoveryAsked || !user.email) return;
+        nativeAuthRecoveryAsked = true;
+        // A Firebase web ID token is NOT a native Firebase sign-in credential.
+        // Ask the existing user once; never cache or log their password.
+        const password = window.prompt("Native calling ke liye apna QYAARO password dobara daalein (Cancel = skip):");
+        if (!password || auth.currentUser?.uid !== user.uid) return;
+        window.YaaroAndroid.signInNativeFirebase(user.email, password, user.uid);
+    } catch (e) {
+        console.warn("Native Firebase session check unavailable");
     }
 }
 
@@ -969,6 +1001,7 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
           authReady = true;
           return;
         }
+        ensureNativeFirebaseSession(user);
         const profileKey = "yaaro_profile_" + user.uid;
         let d = null;
 
