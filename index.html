@@ -962,7 +962,16 @@ async function syncYaaroNativeAuth(user) {
 window.onYaaroNativeAuthResult = function(uid, success) {
     if (!auth.currentUser || auth.currentUser.uid !== uid) return;
     window.yaaroNativeAuthReady = !!success;
+    if (success && typeof window.YaaroAndroid.verifyNativeFirebaseDatabase === "function") {
+        window.YaaroAndroid.verifyNativeFirebaseDatabase(uid);
+    }
     if (!success) console.warn("Native Firebase authentication failed; web login remains active");
+};
+
+window.onYaaroNativeDatabaseResult = function(uid, success) {
+    if (!auth.currentUser || auth.currentUser.uid !== uid) return;
+    window.yaaroNativeDatabaseReady = !!success;
+    if (!success) console.warn("Native Firebase Database profile read failed");
 };
 
 async function ensureNativeFirebaseSession(user) {
@@ -973,6 +982,10 @@ async function ensureNativeFirebaseSession(user) {
         // Never prompt for credentials or misuse a Web ID token as a custom token.
         window.yaaroNativeAuthReady =
             window.YaaroAndroid.isNativeFirebaseSignedIn(user.uid);
+        if (window.yaaroNativeAuthReady &&
+            typeof window.YaaroAndroid.verifyNativeFirebaseDatabase === "function") {
+            window.YaaroAndroid.verifyNativeFirebaseDatabase(user.uid);
+        }
     } catch (e) {
         window.yaaroNativeAuthReady = false;
     }
