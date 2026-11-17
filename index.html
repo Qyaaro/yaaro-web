@@ -2653,10 +2653,28 @@ async function acceptCall() {
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
 
-await db.ref("calls/" + currentCallId).update({
-  answer: { type: answer.type, sdp: answer.sdp },
-  status: "answered"
-});
+const statusRef = db.ref("calls/" + currentCallId + "/status");
+  const tx = await statusRef.transaction(function (current) {
+    if (current === "ringing") return "answered";
+    return;
+  });
+  if (!tx.committed) {
+    try {
+      if (localStream) localStream.getTracks().forEach(function (t) { t.stop(); });
+    } catch (e) {}
+    localStream = null;
+    if (pc) {
+      try { pc.close(); } catch (e) {}
+      pc = null;
+    }
+    currentCallId = null;
+    showScreen("chats-screen");
+    return;
+  }
+
+  await db.ref("calls/" + currentCallId).update({
+    answer: { type: answer.type, sdp: answer.sdp }
+  });
 
   // Listen for caller ICE
   db.ref("calls/" + currentCallId + "/candidates/" + data.from).on("child_added", async snap => {
