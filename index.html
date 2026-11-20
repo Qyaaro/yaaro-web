@@ -2575,13 +2575,39 @@ async function checkNativeDecline() {
 
 async function acceptCall() {
   if (!incomingCallData || !userData) return;
+  if (currentCallId && currentCallId !== incomingCallData.callId) return;
+
   const data = incomingCallData;
-  currentCallId = data.callId;
+  const callId = data.callId;
+  if (!callId) return;
+
+  // 1) Claim the call FIRST — only ringing → answered
+  const statusRef = db.ref("calls/" + callId + "/status");
+  const tx = await statusRef.transaction(function (current) {
+    if (current === "ringing") return "answered";
+    return;
+  });
+  if (!tx.committed) {
+    // Already rejected / missed / ended / accepted elsewhere
+    incomingCallData = null;
+    stopRingtone();
+    showScreen("chats-screen");
+    return;
+  }
+
+  // 2) Safe to clear incoming UI state
+  currentCallId = callId;
   callType = data.type || "voice";
   isCaller = false;
   callMuted = false;
   callCamOff = false;
+  callPeerUid = data.from;
+  callPeerName = data.fromName;
+  incomingCallData = null;
+  stopRingtone();
+  db.ref("incoming/" + userData.uid + "/" + callId).remove();
 
+  // 3) Media after claim
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: true,
@@ -2589,20 +2615,19 @@ async function acceptCall() {
     });
   } catch (e) {
     alert("Microphone permission chahiye");
-    rejectCall();
+    try {
+      await db.ref("calls/" + callId).update({
+        status: "cancelled",
+        endedAt: Date.now()
+      });
+    } catch (err) {}
+    currentCallId = null;
+    showScreen("chats-screen");
     return;
   }
 
-  callPeerUid = data.from;
-  callPeerName = data.fromName;
-  stopRingtone();
   setupCallUI(data.fromName, "Connecting...", callType);
   showScreen("call-screen");
-
-  // Mark accepted FIRST so child_removed / cancel listeners do not kill the call
-  incomingCallData = null;
-  // Clear incoming notification (safe now)
-  db.ref("incoming/" + userData.uid + "/" + currentCallId).remove();
 
   pc = new RTCPeerConnection(ICE_SERVERS);
   localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
@@ -2629,6 +2654,7 @@ async function acceptCall() {
   };
 
   pc.onconnectionstatechange = () => {
+    if (!pc) return;
     if (pc.connectionState === "connected") {
       document.getElementById("call-status").textContent = "Connected";
       startCallTimer();
@@ -2641,52 +2667,38 @@ async function acceptCall() {
     }
   };
 
-  // Get offer and create answer
-  const callSnap = await db.ref("calls/" + currentCallId).once("value");
-  const callData = callSnap.val();
-  if (!callData || !callData.offer) {
-    endCall(true);
-    return;
-  }
-
-  await pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-
-const statusRef = db.ref("calls/" + currentCallId + "/status");
-  const tx = await statusRef.transaction(function (current) {
-    if (current === "ringing") return "answered";
-    return;
-  });
-  if (!tx.committed) {
-    try {
-      if (localStream) localStream.getTracks().forEach(function (t) { t.stop(); });
-    } catch (e) {}
-    localStream = null;
-    if (pc) {
-      try { pc.close(); } catch (e) {}
-      pc = null;
+  // 4) Offer → answer → publish
+  try {
+    const callSnap = await db.ref("calls/" + callId).once("value");
+    const callData = callSnap.val();
+    if (!callData || !callData.offer) {
+      endCall(true);
+      return;
     }
-    currentCallId = null;
-    showScreen("chats-screen");
+
+    await pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    await db.ref("calls/" + callId).update({
+      answer: { type: answer.type, sdp: answer.sdp }
+    });
+  } catch (e) {
+    console.error("acceptCall WebRTC failed:", e);
+    endCall();
     return;
   }
 
-  await db.ref("calls/" + currentCallId).update({
-    answer: { type: answer.type, sdp: answer.sdp }
-  });
-
-  // Listen for caller ICE
-  db.ref("calls/" + currentCallId + "/candidates/" + data.from).on("child_added", async snap => {
+  db.ref("calls/" + callId + "/candidates/" + data.from).on("child_added", async snap => {
     if (!pc) return;
     try { await pc.addIceCandidate(new RTCIceCandidate(snap.val())); } catch (e) {}
   });
 
-  db.ref("calls/" + currentCallId + "/status").on("value", snap => {
+  db.ref("calls/" + callId + "/status").on("value", snap => {
     if (snap.val() === "ended") endCall(true);
   });
 }
-
+  
   function rejectCall(isTimeout) {
     stopRingtone();
     if (incomingCallData) {
