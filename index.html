@@ -2309,6 +2309,11 @@ function saveFcmToken() {
       status: "ringing",
       time: Date.now()
     });
+    const ringEl = document.getElementById("call-status");
+    if (ringEl) {
+      ringEl.textContent = "Ringing...";
+      ringEl.className = "call-status connecting";
+    }
    // Send incoming-call push through Cloudflare Worker
     try {
       const idToken = await auth.currentUser.getIdToken();
@@ -2350,10 +2355,16 @@ function saveFcmToken() {
       try { await pc.addIceCandidate(new RTCIceCandidate(snap.val())); } catch (e) {}
     });
 
-    // Listen for status (rejected/ended)
+    // Listen for status (rejected/ended/answered)
     db.ref("calls/" + currentCallId + "/status").on("value", snap => {
       const st = snap.val();
-      if (st === "busy") {
+      if (st === "answered") {
+        const el = document.getElementById("call-status");
+        if (el && (el.textContent.includes("Calling") || el.textContent.includes("Ringing"))) {
+          el.textContent = "Connecting...";
+          el.className = "call-status connecting";
+        }
+      } else if (st === "busy") {
         document.getElementById("call-status").textContent = "Busy";
         saveCallHistory("busy");
         setTimeout(() => endCall(true), 1500);
@@ -2362,21 +2373,26 @@ function saveFcmToken() {
         setTimeout(() => endCall(true), 1500);
       } else if (st === "ended" || st === "cancelled") {
         endCall(true);
+      } else if (st === "missed") {
+        document.getElementById("call-status").textContent = "No answer";
+        setTimeout(() => endCall(true), 1500);
       }
     });
 
-    // Timeout if no answer in 45s
-    setTimeout(() => {
-      if (currentCallId && document.getElementById("call-status").textContent.includes("Calling")) {
+    // Timeout if still ringing after 45s (do not kill answered calls)
+    setTimeout(async () => {
+      const cid = currentCallId;
+      if (!cid || !isCaller) return;
+      try {
+        const st = (await db.ref("calls/" + cid + "/status").once("value")).val();
+        if (st !== "ringing") return;
         document.getElementById("call-status").textContent = "No answer";
-        // Mark missed + clear callee incoming so they don't ring late
-        const cid = currentCallId;
         const peer = callPeerUid;
-        db.ref("calls/" + cid).update({ status: "missed", endedAt: Date.now() });
+        await db.ref("calls/" + cid).update({ status: "missed", endedAt: Date.now() });
         if (peer) db.ref("incoming/" + peer + "/" + cid).remove();
         saveCallHistory("missed");
         setTimeout(() => endCall(true), 1500);
-      }
+      } catch (e) {}
     }, 45000);
   }
 
