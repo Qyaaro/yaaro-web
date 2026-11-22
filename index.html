@@ -2609,8 +2609,11 @@ async function acceptCall() {
   if (currentCallId && currentCallId !== incomingCallData.callId) return;
 
   const data = incomingCallData;
-  const callId = data.callId;
-  if (!callId) return;
+  const callId = data.callId || data.id;
+  if (!callId) {
+    alert("Fail 1: callId nahi mila");
+    return;
+  }
 
   // 1) Claim the call FIRST — only ringing → answered
   const statusRef = db.ref("calls/" + callId + "/status");
@@ -2619,7 +2622,7 @@ async function acceptCall() {
     return;
   });
   if (!tx.committed) {
-    // Already rejected / missed / ended / accepted elsewhere
+    alert("Fail 2: status ringing nahi tha = " + (tx.snapshot ? tx.snapshot.val() : "?"));
     incomingCallData = null;
     stopRingtone();
     showScreen("chats-screen");
@@ -2716,6 +2719,7 @@ async function acceptCall() {
     });
   } catch (e) {
     console.error("acceptCall WebRTC failed:", e);
+    alert("Fail 3: WebRTC = " + (e && e.message ? e.message : e));
     endCall();
     return;
   }
