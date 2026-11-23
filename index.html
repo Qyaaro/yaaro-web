@@ -2615,19 +2615,18 @@ async function acceptCall() {
     return;
   }
 
-  // 1) Claim the call FIRST — only ringing → answered
+  // 1) Claim the call FIRST — read real status, then set answered
   const statusRef = db.ref("calls/" + callId + "/status");
-  const tx = await statusRef.transaction(function (current) {
-    if (current === "ringing") return "answered";
-    return;
-  });
-  if (!tx.committed) {
-    alert("Fail 2: status ringing nahi tha = " + (tx.snapshot ? tx.snapshot.val() : "?"));
+  const statusSnap = await statusRef.once("value");
+  const currentStatus = statusSnap.val();
+  if (currentStatus !== "ringing") {
+    alert("Fail 2: status ringing nahi tha = " + currentStatus);
     incomingCallData = null;
     stopRingtone();
     showScreen("chats-screen");
     return;
   }
+  await statusRef.set("answered");
 
   // 2) Safe to clear incoming UI state
   currentCallId = callId;
