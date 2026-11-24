@@ -2861,7 +2861,20 @@ if (endedIsCaller && endedCallId && endedPeerUid && !wasConnected) {
       av.style.backgroundImage = "";
       av.textContent = (name || "?")[0].toUpperCase();
     }
-    document.getElementById("call-sub").textContent = peer?.uniqueID || "";
+    let uidText = (peer && peer.uniqueID) || "";
+    if (!uidText && currentChat && callPeerUid === currentChat.uid) {
+      uidText = currentChat.uniqueID || "";
+    }
+    document.getElementById("call-sub").textContent = uidText;
+    if (!uidText && callPeerUid) {
+      db.ref("users/" + callPeerUid + "/uniqueID").once("value").then(s => {
+        const v = s.val();
+        if (v) {
+          document.getElementById("call-sub").textContent = v;
+          if (usersCache[callPeerUid]) usersCache[callPeerUid].uniqueID = v;
+        }
+      }).catch(() => {});
+    }
     const st = document.getElementById("call-status");
     st.textContent = status;
     st.className = "call-status" + (status.includes("Connect") && !status.includes("Connected") ? " connecting" : "");
@@ -3033,8 +3046,7 @@ if (endedIsCaller && endedCallId && endedPeerUid && !wasConnected) {
 
   let cameraSwitching = false;
 
-  async function switchCamera() {
-    // ONLY this phone's camera. Never touches remoteStream / remote-video / peer.
+async function switchCamera() {
     if (callType !== "video" || !pc || !localStream) return;
     if (cameraSwitching) return;
     cameraSwitching = true;
@@ -3043,41 +3055,30 @@ if (endedIsCaller && endedCallId && endedPeerUid && !wasConnected) {
 
     try {
       const oldTrack = localStream.getVideoTracks()[0] || null;
-      const oldId = (oldTrack && oldTrack.getSettings) ? (oldTrack.getSettings().deviceId || "") : "";
+      const wantEnv = usingFrontCam;
 
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const cams = devices.filter(d => d.kind === "videoinput");
-      if (!cams.length) throw new Error("No camera");
-
-      let nextCam = cams[0];
-      if (cams.length >= 2) {
-        let i = cams.findIndex(c => c.deviceId === oldId);
-        if (i < 0) i = 0;
-        nextCam = cams[(i + 1) % cams.length];
-      }
-
-      // Get NEW track first (keep old until ready — less glitch for peer)
       const newStream = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: { deviceId: { exact: nextCam.deviceId }, width: { ideal: 640 }, height: { ideal: 480 } }
-      }).catch(() => navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { deviceId: nextCam.deviceId }
-      }));
+        video: {
+          facingMode: { ideal: wantEnv ? "environment" : "user" },
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        }
+      });
 
       const newTrack = newStream.getVideoTracks()[0];
       if (!newTrack) throw new Error("No track");
 
-      // Outgoing WebRTC only
       const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
       if (sender) await sender.replaceTrack(newTrack);
 
-      // Local stream + local preview only
       if (oldTrack) {
         try { localStream.removeTrack(oldTrack); } catch (e) {}
         try { oldTrack.stop(); } catch (e) {}
       }
-      newStream.getTracks().forEach(t => { if (t !== newTrack) try { t.stop(); } catch (e) {} });
+      newStream.getTracks().forEach(t => {
+        if (t !== newTrack) try { t.stop(); } catch (e) {}
+      });
       localStream.addTrack(newTrack);
       if (callCamOff) newTrack.enabled = false;
 
@@ -3087,21 +3088,16 @@ if (endedIsCaller && endedCallId && endedPeerUid && !wasConnected) {
         if (!callCamOff) lv.style.display = "block";
       }
 
-      try {
-        const face = newTrack.getSettings && newTrack.getSettings().facingMode;
-        if (face === "user") usingFrontCam = true;
-        else if (face === "environment") usingFrontCam = false;
-        else usingFrontCam = !usingFrontCam;
-      } catch (e) { usingFrontCam = !usingFrontCam; }
-
+      usingFrontCam = !wantEnv;
     } catch (e) {
       console.error("switchCamera", e);
+      alert("Flip fail: " + (e.message || e));
     } finally {
       cameraSwitching = false;
       if (btn) setTimeout(() => btn.classList.remove("active"), 200);
     }
   }
-
+  
   async function applyNewVideoTrack(newStream) {
     if (!newStream || !localStream || !pc) return;
     const newTrack = newStream.getVideoTracks()[0];
@@ -3150,22 +3146,17 @@ if (endedIsCaller && endedCallId && endedPeerUid && !wasConnected) {
 
     const audio = document.getElementById("remote-audio");
     const video = document.getElementById("remote-video");
-    // Never silence remote media via mute
     if (audio) audio.muted = false;
     if (video) video.muted = false;
 
-    // Android APK bridge (real speakerphone control)
     try {
-      if (window.YaaroAndroid && typeof YaaroAndroid.setSpeakerphoneOn === "function") {
-        YaaroAndroid.setSpeakerphoneOn(speakerOn);
-      }
-    } catch (e) {}
-
-    // Best-effort web sink
-    try {
-      const el = callType === "video" ? video : audio;
-      if (el && typeof el.setSinkId === "function") {
-        el.setSinkId("").catch(() => {});
+      if (window.YaaroAndroid) {
+        if (typeof YaaroAndroid.setAudioCallMode === "function") {
+          YaaroAndroid.setAudioCallMode();
+        }
+        if (typeof YaaroAndroid.setSpeakerphoneOn === "function") {
+          YaaroAndroid.setSpeakerphoneOn(speakerOn);
+        }
       }
     } catch (e) {}
   }
