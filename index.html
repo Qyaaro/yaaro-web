@@ -3057,14 +3057,21 @@ async function switchCamera() {
       const oldTrack = localStream.getVideoTracks()[0] || null;
       const wantEnv = usingFrontCam;
 
+      // 1) Pehle purani camera FREE
+      if (oldTrack) {
+        try { localStream.removeTrack(oldTrack); } catch (e) {}
+        try { oldTrack.stop(); } catch (e) {}
+      }
+      await new Promise(r => setTimeout(r, 250));
+
+      // 2) Phir nayi camera
       const newStream = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: {
-          facingMode: { ideal: wantEnv ? "environment" : "user" },
-          width: { ideal: 640 },
-          height: { ideal: 480 }
-        }
-      });
+        video: wantEnv ? "environment" : "user"
+      }).catch(() => navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: wantEnv ? "environment" : "user" }
+      }));
 
       const newTrack = newStream.getVideoTracks()[0];
       if (!newTrack) throw new Error("No track");
@@ -3072,10 +3079,6 @@ async function switchCamera() {
       const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
       if (sender) await sender.replaceTrack(newTrack);
 
-      if (oldTrack) {
-        try { localStream.removeTrack(oldTrack); } catch (e) {}
-        try { oldTrack.stop(); } catch (e) {}
-      }
       newStream.getTracks().forEach(t => {
         if (t !== newTrack) try { t.stop(); } catch (e) {}
       });
