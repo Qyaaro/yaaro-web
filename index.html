@@ -3053,54 +3053,96 @@ async function switchCamera() {
     const btn = document.getElementById("switch-cam-btn");
     if (btn) btn.classList.add("active");
 
+    const lv = document.getElementById("local-video");
+    const wantFacing = usingFrontCam ? "environment" : "user";
+
     try {
-      const oldTrack = localStream.getVideoTracks()[0] || null;
-      const wantEnv = usingFrontCam;
+      // 1) Purani video tracks band
+      localStream.getVideoTracks().forEach(t => {
+        try { localStream.removeTrack(t); } catch (e) {}
+        try { t.stop(); } catch (e) {}
+      });
+      if (lv) lv.srcObject = null;
+      await new Promise(r => setTimeout(r, 400));
 
-      // 1) Pehle purani camera FREE
-      if (oldTrack) {
-        try { localStream.removeTrack(oldTrack); } catch (e) {}
-        try { oldTrack.stop(); } catch (e) {}
+      // 2) Nayi camera — 3 fallbacks
+      let newStream = null;
+      const tries = [
+        { audio: false, video: { facingMode: { exact: wantFacing } } },
+        { audio: false, video: { facingMode: { ideal: wantFacing } } },
+        { audio: false, video: { facingMode: wantFacing } },
+        { audio: false, video: true }
+      ];
+      for (let i = 0; i < tries.length; i++) {
+        try {
+          newStream = await navigator.mediaDevices.getUserMedia(tries[i]);
+          break;
+        } catch (err) {
+          newStream = null;
+        }
       }
-      await new Promise(r => setTimeout(r, 250));
-
-      // 2) Phir nayi camera
-      const newStream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: wantEnv ? "environment" : "user"
-      }).catch(() => navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: wantEnv ? "environment" : "user" }
-      }));
+      if (!newStream) throw new Error("Camera open fail");
 
       const newTrack = newStream.getVideoTracks()[0];
       if (!newTrack) throw new Error("No track");
 
-      const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+      // 3) WebRTC sender (stopped track bhi video kind rakhta hai)
+      let sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+      if (!sender) {
+        const tr = pc.getTransceivers().find(t =>
+          (t.sender && t.sender.track && t.sender.track.kind === "video") ||
+          (t.receiver && t.receiver.track && t.receiver.track.kind === "video")
+        );
+        if (tr) sender = tr.sender;
+      }
       if (sender) await sender.replaceTrack(newTrack);
+      else pc.addTrack(newTrack, localStream);
 
       newStream.getTracks().forEach(t => {
         if (t !== newTrack) try { t.stop(); } catch (e) {}
       });
-      localStream.addTrack(newTrack);
+      if (!localStream.getVideoTracks().includes(newTrack)) {
+        localStream.addTrack(newTrack);
+      }
       if (callCamOff) newTrack.enabled = false;
 
-      const lv = document.getElementById("local-video");
       if (lv) {
         lv.srcObject = localStream;
         if (!callCamOff) lv.style.display = "block";
       }
 
-      usingFrontCam = !wantEnv;
+      usingFrontCam = (wantFacing === "user");
     } catch (e) {
       console.error("switchCamera", e);
       alert("Flip fail: " + (e.message || e));
+      try {
+        const rec = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+        const t = rec.getVideoTracks()[0];
+        if (t) {
+          let s = pc.getSenders().find(x => x.track && x.track.kind === "video");
+          if (!s) {
+            const tr = pc.getTransceivers().find(tr =>
+              tr.receiver && tr.receiver.track && tr.receiver.track.kind === "video"
+            );
+            if (tr) s = tr.sender;
+          }
+          if (s) await s.replaceTrack(t);
+          localStream.getVideoTracks().forEach(x => {
+            try { x.stop(); } catch (err) {}
+          });
+          localStream.addTrack(t);
+          if (lv) {
+            lv.srcObject = localStream;
+            lv.style.display = "block";
+          }
+        }
+      } catch (e2) {}
     } finally {
       cameraSwitching = false;
       if (btn) setTimeout(() => btn.classList.remove("active"), 200);
     }
   }
-  
+    
   async function applyNewVideoTrack(newStream) {
     if (!newStream || !localStream || !pc) return;
     const newTrack = newStream.getVideoTracks()[0];
