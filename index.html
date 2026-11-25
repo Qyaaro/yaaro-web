@@ -580,10 +580,10 @@
       <div class="form-group">
         <label>Password</label>
         <div class="password-wrap">
-          <input type="password" id="signup-password" placeholder="Strong password">
+          <input type="password" id="signup-password" placeholder="Strong password" minlength="8" maxlength="32">
           <button type="button" class="eye-btn" onclick="togglePass('signup-password',this)">👁</button>
         </div>
-        <div class="hint">A-Z, a-z, 0-9, special (@#$) required</div>
+        <div class="hint">8–32 characters (A-Z, a-z, 0-9, aur koi bhi special symbol)</div>
       </div>
       <div class="form-group">
         <label>Confirm Password</label>
@@ -934,7 +934,12 @@
     btn.textContent = el.type === "password" ? "👁" : "🙈";
   }
   function isStrong(p) {
-    return p.length >= 6 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p) && /[!@#$%^&*]/.test(p);
+    return p.length >= 8 && p.length <= 32
+      && /[A-Z]/.test(p)
+      && /[a-z]/.test(p)
+      && /[0-9]/.test(p)
+      && /[^A-Za-z0-9\s]/.test(p)
+      && !/\s/.test(p);
   }
 
 async function syncYaaroNativeAuth(user) {
@@ -1111,7 +1116,7 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
     if (!email || !username || !pass || !conf || !country) { err.textContent = "Saare fields bharo"; err.style.display = "block"; return; }
     if (username.length < 6 || username.length > 20) { err.textContent = "Username 6–20 characters hona chahiye"; err.style.display = "block"; return; }
     if (!/^[a-zA-Z0-9_]+$/.test(username)) { err.textContent = "Username mein sirf letters, numbers, _ allowed (no spaces/special)"; err.style.display = "block"; return; }
-    if (!isStrong(pass)) { err.textContent = "Strong password chahiye (A-Z a-z 0-9 @#$)"; err.style.display = "block"; return; }
+    if (!isStrong(pass)) { err.textContent = "Password 8–32 characters (A-Z, a-z, 0-9, aur koi bhi special symbol, no space)"; err.style.display = "block"; return; }
     if (pass !== conf) { err.textContent = "Password match nahi"; err.style.display = "block"; return; }
     if (!agree) { err.textContent = "Agree checkbox tick karo"; err.style.display = "block"; return; }
 
