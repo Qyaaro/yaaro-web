@@ -1219,10 +1219,11 @@ auth.onIdTokenChanged(syncYaaroNativeAuth);
     const letter = (u.username || "?")[0].toUpperCase();
     const online = isOnline(u) ? '<div class="online-dot"></div>' : '';
     if (u.photoURL) {
-      return `<div class="avatar" style="background-image:url('${u.photoURL}');background-color:transparent;">${online}</div>`;
+      const pu = safeUrl(u.photoURL);
+      if (pu) return `<div class="avatar" style="background-image:url('\( {esc(pu)}');background-color:transparent;"> \){online}</div>`;
     }
     return `<div class="avatar">${letter}${online}</div>`;
-  }
+  }return `\u003Cdiv class=\"avatar\">${letter}${online}\u003C/div>`;
 
   // Unread counts: unread[roomId] = number
   let unreadCounts = {};
@@ -1555,12 +1556,21 @@ try {
     }
     let body = "";
     if (m.type === "image" && m.data) {
-      body = `<img class="media" src="${m.data}" alt="photo" onclick="event.stopPropagation();openLightbox(this.src)">`;
+    const src = safeUrl(m.data);
+      body = src
+        ? `<img class="media" src="${esc(src)}" alt="photo" onclick="event.stopPropagation();openLightbox(this.src)">`
+        : `<div>${esc("[invalid image]")}</div>`;
       if (m.text) body += `<div>${esc(m.text)}</div>`;
     } else if (m.type === "video" && m.data) {
-      body = `<video class="media" controls playsinline preload="metadata" src="${m.data}" style="max-width:220px;max-height:280px;border-radius:10px;background:#000;"></video>`;
+      const src = safeUrl(m.data);
+      body = src
+        ? `<video class="media" controls playsinline preload="metadata" src="${esc(src)}" style="max-width:220px;max-height:280px;border-radius:10px;background:#000;"></video>`
+        : `<div>${esc("[invalid video]")}</div>`;
     } else if (m.type === "voice" && m.data) {
-      body = `<audio class="voice-msg" controls src="${m.data}"></audio>`;
+      const src = safeUrl(m.data);
+      body = src
+        ? `<audio class="voice-msg" controls src="${esc(src)}"></audio>`
+        : `<div>${esc("[invalid audio]")}</div>`;   
     } else if (m.type === "file" && m.data) {
       fileDataMap[id] = { data: m.data, fileName: m.fileName || "file", fileType: m.fileType || "" };
       const isPdf = (m.fileType||"").includes("pdf") || (m.fileName||"").match(/\.pdf$/i);
@@ -3335,9 +3345,10 @@ async function switchCamera() {
       div.ontouchend = () => clearTimeout(_clp);
       div.ontouchmove = () => clearTimeout(_clp);
       div.oncontextmenu = (e) => { e.preventDefault(); openCallHistoryMenu(c, e); };
-      const avHtml = (u && u.photoURL)
-        ? `<div class="avatar" style="background-image:url('${u.photoURL}');background-color:transparent;"></div>`
-        : `<div class="avatar">${(c.otherName||"?")[0].toUpperCase()}</div>`;
+      const pu = u && u.photoURL ? safeUrl(u.photoURL) : "";
+      const avHtml = pu
+        ? `<div class="avatar" style="background-image:url('${esc(pu)}');background-color:transparent;"></div>`
+        : `<div class="avatar">${esc((c.otherName||"?")[0].toUpperCase())}</div>`;
       div.innerHTML = `
         ${avHtml}
         <div class="chat-info">
@@ -3514,7 +3525,27 @@ async function switchCamera() {
     document.getElementById("lightbox-img").src = "";
   }
 
-  function esc(t) { const d=document.createElement("div"); d.textContent=t; return d.innerHTML; }
+  function esc(t) {
+    return String(t == null ? "" : t)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function safeUrl(u) {
+    const s = String(u == null ? "" : u).trim();
+    if (!s) return "";
+    if (/^https:\/\//i.test(s)) return s;
+    if (/^http:\/\//i.test(s)) return s;
+    if (/^data:image\//i.test(s)) return s;
+    if (/^data:video\//i.test(s)) return s;
+    if (/^data:audio\//i.test(s)) return s;
+    if (/^data:application\//i.test(s)) return s;
+    if (/^blob:/i.test(s)) return s;
+    return "";
+  }
   function fmtTime(ts) { return new Date(ts).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}); }
   function fmtList(ts) {
     const d=new Date(ts), n=new Date();
